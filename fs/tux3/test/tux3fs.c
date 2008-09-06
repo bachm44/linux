@@ -32,7 +32,7 @@
  * 2. Mount on foo/ like: ./tux3fuse -f foo/     (-f for foreground)
  */
 
-#define FUSE_USE_VERSION 26
+#define FUSE_USE_VERSION 25
 
 #include <fuse.h>
 #include <stdio.h>
@@ -268,7 +268,7 @@ int main(int argc, char **argv)
 //		&(struct iattr){ .mode = S_IFREG | S_IRWXU | S_IROTH |
 //			S_IRGRP });
 
-	return fuse_main(argc, argv, &tux3_oper);
+	return fuse_main(argc, argv, &tux3_oper, NULL);
 
 eek:
 	fprintf(stderr, "Eek! %s\n", strerror(errno));
