@@ -193,11 +193,8 @@ struct tux_path { struct buffer_head *buffer; struct index_entry *next; };
 struct sb
 {
 	struct disksuper super;
+
 	struct btree itable;
-	char bogopad[4096 - sizeof(struct disksuper)]; // point to super in buffer!!!
-#ifndef __KERNEL__
-	map_t *devmap;
-#endif
 	struct buffer_head *rootbuf;
 	struct inode *bitmap, *rootdir, *vtable, *atable;
 	unsigned blocksize, blockbits, blockmask;
@@ -205,17 +202,16 @@ struct sb
 	unsigned entries_per_node, max_inodes_per_block;
 	unsigned version, atomref_base, unatom_base;
 	unsigned freeatom, atomgen;
+#ifndef __KERNEL__
+	map_t *devmap;
+#endif
 };
 
 #ifdef __KERNEL__
 struct tux_inode {
-	struct sb *sb;
-	struct map *map;
 	struct btree btree;
 	inum_t inum;
-	unsigned i_version, present;
-	u64 i_size, i_mtime, i_ctime, i_atime;
-	unsigned i_mode, i_uid, i_gid, i_links;
+	unsigned present;
 	struct xcache *xcache;
 
 	struct inode vfs_inode;
@@ -239,15 +235,17 @@ static inline map_t *mapping(struct inode *inode)
 }
 #else
 struct inode {
-	struct sb *i_sb;
-	map_t *map;
 	struct btree btree;
 	inum_t inum;
-	unsigned i_version, present;
+	unsigned present;
+	struct xcache *xcache;
+
+	struct sb *i_sb;
+	map_t *map;
 	u64 i_size;
+	unsigned i_version;
 	struct timespec i_mtime, i_ctime, i_atime;
 	unsigned i_mode, i_uid, i_gid, i_nlink;
-	struct xcache *xcache;
 };
 
 struct file {
