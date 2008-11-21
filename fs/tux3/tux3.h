@@ -165,6 +165,12 @@ static inline void *decode48(void *at, u64 *val)
 #define SB_LOC (1 << 12)
 #define SB struct sb *sb
 
+/* Special inode numbers */
+#define TUX_BITMAP_INO		0
+#define TUX_VTABLE_INO		2
+#define TUX_ATABLE_INO		10
+#define TUX_ROOTDIR_INO		13
+
 struct disksuper
 {
 	char magic[SB_MAGIC_SIZE];
@@ -238,6 +244,17 @@ typedef struct address_space map_t;
 static inline map_t *mapping(struct inode *inode)
 {
 	return inode->i_mapping;
+}
+
+static inline void *malloc(size_t size)
+{
+	might_sleep();
+	return kmalloc(size, GFP_NOFS);
+}
+
+static inline void free(void *ptr)
+{
+	kfree(ptr);
 }
 #else
 struct inode {
