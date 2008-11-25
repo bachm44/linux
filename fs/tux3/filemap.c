@@ -1,3 +1,8 @@
+#ifdef __KERNEL__
+#include <linux/fs.h>
+#include <linux/mpage.h>
+#include <linux/aio.h>
+#endif
 #include "tux3.h"
 
 #ifndef trace
@@ -185,7 +190,7 @@ dleaf_dump(&tux_inode(inode)->btree, leaf);
 			dwalk_pack(walk, index, make_extent(extent_block(seg[i]), extent_count(seg[i])));
 			index += extent_count(seg[i]);
 		}
-		set_buffer_dirty(path[tux_inode(inode)->btree.root.depth].buffer);
+		mark_buffer_dirty(path[tux_inode(inode)->btree.root.depth].buffer);
 
 		//dleaf_dump(&tux_inode(inode)->btree, leaf);
 		/* assert we used exactly the expected space */
@@ -234,19 +239,23 @@ eek:
 int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create)
 {
-	if (create)
+	int blocksize = 1 << inode->i_blkbits;
+	sector_t last_iblock;
+
+	last_iblock = (i_size_read(inode) + (blocksize - 1))
+		>> inode->i_blkbits;
+	if (iblock >= last_iblock)
 		return -EIO;
 
 	struct sb *sbi = tux_sb(inode->i_sb);
-	int levels = tux_inode(inode)->btree.root.depth, i, err;
+	size_t max_blocks = bh_result->b_size >> inode->i_blkbits;
+	int levels = tux_inode(inode)->btree.root.depth, err;
 	if (!levels) {
 		trace("unmapped block %Lx", (L)iblock);
 		return 0;
 	}
 
-	bh_result->b_blocknr = iblock;
-
-	block_t start = iblock, limit = iblock + 1;
+	block_t start = iblock, limit = iblock + max_blocks;
 	struct extent seg[10];
 	struct tux_path *path = alloc_path(levels + 1);
 	if (!path)
@@ -275,19 +284,10 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 				dwalk_back(walk);
 			break;
 		}
-	struct dwalk rewind = *walk;
-	printf("prior extents:");
-	for (struct extent *extent; (extent = dwalk_next(walk));)
-		printf(" 0x%Lx => %Lx/%x;", (L)dwalk_index(walk), (L)extent_block(*extent), extent_count(*extent));
-	printf("\n");
-
-	if (dleaf_groups(leaf))
-		printf("---- rewind to 0x%Lx => %Lx/%x ----\n", (L)dwalk_index(&rewind), (L)extent_block(*rewind.extent), extent_count(*rewind.extent));
-	*walk = rewind;
 
 	struct extent *next_extent = NULL;
 	block_t index = start, offset = 0;
-	while (index < limit) {
+	while (index < limit && segs < ARRAY_SIZE(seg)) {
 		trace("index %Lx, limit %Lx", (L)index, (L)limit);
 		if (next_extent) {
 			trace("emit %Lx/%x", (L)extent_block(*next_extent), extent_count(*next_extent));
@@ -308,98 +308,178 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 			}
 		}
 		if (index < next_index) {
-			int gap = next_index - index;
-			trace("index = %Lx, offset = %Li, next = %Lx, gap = %i", (L)index, (L)offset, (L)next_index, gap);
-			if (index + gap > limit)
-				gap = limit - index;
-			trace("fill gap at %Lx/%x", (L)index, gap);
-			block_t block = 0;
-			if (create) {
-				block = balloc_extent(sbi, gap); // goal ???
-				if (block == -1)
-					goto nospace; // clean up !!!
-			}
-			seg[segs++] = make_extent(block, gap);
-			index += gap;
+			/* there is gap (hole), so stop */
+			break;
 		}
 	}
 
-	printf("segs (offset = %Lx):", (L)offset);
-	for (i = 0, index = start; i < segs; i++) {
-		printf(" %Lx => %Lx/%x;", (L)index - offset, (L)extent_block(seg[i]), extent_count(seg[i]));
-		index += extent_count(seg[i]);
+	block_t block = extent_block(seg[0]) + offset;
+	size_t count = extent_count(seg[0]) - offset;
+	for (int i = 1; i < segs; i++) {
+		if (block + count != extent_block(seg[i]))
+			break;
+		count += extent_count(seg[i]);
 	}
-	printf(" (%i)\n", segs);
-
-
-	unsigned skip = offset;
-	for (i = 0, index = start - offset; !err && index < limit; i++) {
-		unsigned count = extent_count(seg[i]);
-		trace_on("extent 0x%Lx/%x => %Lx", (L)index, count, (L)extent_block(seg[i]));
-		for (int j = skip; !err && j < count; j++) {
-			block_t block = extent_block(seg[i]) + j;
-			map_bh(bh_result, inode->i_sb, block);
-			goto out;
-		}
-		index += count;
-		skip = 0;
+	if (block) {
+		map_bh(bh_result, inode->i_sb, block);
+		bh_result->b_size = min(max_blocks, count) << sbi->blockbits;
 	}
-out:
+	trace("%s: block %Lu, size %zu", __func__,
+	      (L)bh_result->b_blocknr, bh_result->b_size);
+
 	release_path(path, levels + 1);
 	free_path(path);
 
 	return err;
-
-nospace:
-	err = -ENOSPC;
-	warn("could not add extent to tree: %d", err);
-	release_path(path, levels + 1);
-	free_path(path);
-	// free blocks and try to clean up ???
-	return -EIO;
 }
 
-struct buffer_head *blockread(struct address_space *mapping, block_t block)
+struct buffer_head *blockread(struct address_space *mapping, block_t iblock)
 {
 	struct inode *inode = mapping->host;
-	struct buffer_head map_bh;
-	struct page page;
-	int err;
+	pgoff_t index;
+	struct page *page;
+	struct buffer_head *bh;
+	int offset;
 
-	printk("%s: ino %Lu, block %Lu\n", __func__, tux_inode(inode)->inum, block);
+	printk("%s: ==> ino %Lu, block %Lu\n", __func__, tux_inode(inode)->inum, iblock);
 
-	page.mapping = mapping;
-	map_bh.b_page = &page;
-	map_bh.b_state = 0;
-	map_bh.b_blocknr = 0;
-	map_bh.b_size = 1 << inode->i_blkbits;
+	index = iblock >> (PAGE_CACHE_SHIFT - inode->i_blkbits);
+	offset = iblock & ((PAGE_CACHE_SHIFT - inode->i_blkbits) - 1);
 
-	err = tux3_get_block(mapping->host, block, &map_bh, 0);
-	if (err)
-		return NULL;
+	page = read_mapping_page(mapping, index, NULL);
+	if (!IS_ERR(page)) {
+		if (PageError(page))
+			goto error;
+	}
 
-	return sb_bread(inode->i_sb, map_bh.b_blocknr);
+	lock_page(page);
+
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, tux_sb(inode->i_sb)->blocksize, 0);
+
+	bh = page_buffers(page);
+	while (offset--)
+		bh = bh->b_this_page;
+	get_bh(bh);
+
+	unlock_page(page);
+	page_cache_release(page);
+
+	printk("%s: <=== b_blocknr %Lu\n", __func__, (L)bh->b_blocknr);
+
+	return bh;
+
+error:
+	page_cache_release(page);
+	return NULL;
 }
 
-struct buffer_head *blockget(struct address_space *mapping, block_t block)
+struct buffer_head *blockget(struct address_space *mapping, block_t iblock)
 {
 	struct inode *inode = mapping->host;
-	struct buffer_head map_bh;
-	struct page page;
-	int err;
+	pgoff_t index;
+	struct page *page;
+	struct buffer_head *bh;
+	int offset;
 
-	printk("%s: ino %Lu, block %Lu\n", __func__, tux_inode(inode)->inum, block);
+	printk("%s: ino %Lu, block %Lu\n", __func__, tux_inode(inode)->inum, iblock);
 
-	page.mapping = mapping;
-	map_bh.b_page = &page;
-	map_bh.b_state = 0;
-	map_bh.b_blocknr = 0;
-	map_bh.b_size = 1 << inode->i_blkbits;
+	index = iblock >> (PAGE_CACHE_SHIFT - inode->i_blkbits);
+	offset = iblock & ((PAGE_CACHE_SHIFT - inode->i_blkbits) - 1);
 
-	err = tux3_get_block(mapping->host, block, &map_bh, 0);
-	if (err)
+	page = grab_cache_page(mapping, index);
+	if (!page)
 		return NULL;
 
-	return sb_getblk(inode->i_sb, map_bh.b_blocknr);
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, tux_sb(inode->i_sb)->blocksize, 0);
+
+	bh = page_buffers(page);
+	while (offset--)
+		bh = bh->b_this_page;
+	get_bh(bh);
+
+	unlock_page(page);
+	page_cache_release(page);
+
+	return bh;
 }
+
+static int tux3_readpage(struct file *file, struct page *page)
+{
+	return mpage_readpage(page, tux3_get_block);
+}
+
+static int tux3_readpages(struct file *file, struct address_space *mapping,
+			  struct list_head *pages, unsigned nr_pages)
+{
+	return mpage_readpages(mapping, pages, nr_pages, tux3_get_block);
+}
+
+static int tux3_write_begin(struct file *file, struct address_space *mapping,
+			    loff_t pos, unsigned len, unsigned flags,
+			    struct page **pagep, void **fsdata)
+{
+	*pagep = NULL;
+	return block_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+				 tux3_get_block);
+}
+
+static int tux3_writepage(struct page *page, struct writeback_control *wbc)
+{
+	return block_write_full_page(page, tux3_get_block, wbc);
+}
+
+static int tux3_writepages(struct address_space *mapping,
+			   struct writeback_control *wbc)
+{
+	return mpage_writepages(mapping, wbc, tux3_get_block);
+}
+
+static ssize_t tux3_direct_IO(int rw, struct kiocb *iocb,
+			      const struct iovec *iov,
+			      loff_t offset, unsigned long nr_segs)
+{
+	struct file *file = iocb->ki_filp;
+	struct inode *inode = file->f_mapping->host;
+	return blockdev_direct_IO(rw, iocb, inode, inode->i_sb->s_bdev, iov,
+				  offset, nr_segs, tux3_get_block, NULL);
+}
+
+static sector_t tux3_bmap(struct address_space *mapping, sector_t iblock)
+{
+	sector_t blocknr;
+
+	mutex_lock(&mapping->host->i_mutex);
+	blocknr = generic_block_bmap(mapping, iblock, tux3_get_block);
+	mutex_unlock(&mapping->host->i_mutex);
+
+	return blocknr;
+}
+
+const struct address_space_operations tux_aops = {
+	.readpage		= tux3_readpage,
+	.readpages		= tux3_readpages,
+	.writepage		= tux3_writepage,
+	.writepages		= tux3_writepages,
+	.sync_page		= block_sync_page,
+	.write_begin		= tux3_write_begin,
+	.write_end		= generic_write_end,
+	.bmap			= tux3_bmap,
+//	.invalidatepage		= ext4_da_invalidatepage,
+//	.releasepage		= ext4_releasepage,
+	.direct_IO		= tux3_direct_IO,
+	.migratepage		= buffer_migrate_page,
+//	.is_partially_uptodate	= block_is_partially_uptodate,
+};
+
+static int tux3_dir_readpage(struct file *file, struct page *page)
+{
+	return block_read_full_page(page, tux3_get_block);
+}
+
+const struct address_space_operations tux_dir_aops = {
+	.readpage	= tux3_dir_readpage,
+	.bmap		= tux3_bmap,
+};
 #endif /* __KERNEL__ */

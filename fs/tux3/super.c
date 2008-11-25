@@ -10,7 +10,7 @@
 #include <linux/bio.h>
 #include <linux/fs.h>
 #include <linux/statfs.h>
-#include <linux/tux3.h>
+
 #include "tux3.h"
 
 static struct kmem_cache *tux_inode_cachep;
@@ -50,64 +50,6 @@ static struct inode *tux3_alloc_inode(struct super_block *sb)
 static void tux3_destroy_inode(struct inode *inode)
 {
 	kmem_cache_free(tux_inode_cachep, tux_inode(inode));
-}
-
-int vecio(int rw, struct block_device *dev, sector_t sector,
-	bio_end_io_t endio, void *data, unsigned vecs, struct bio_vec *vec)
-{
-	struct bio *bio = bio_alloc(GFP_KERNEL, vecs);
-	if (!bio)
-		return -ENOMEM;
-	bio->bi_bdev = dev;
-	bio->bi_sector = sector;
-	bio->bi_end_io = endio;
-	bio->bi_private = data;
-	while (vecs--) {
-		bio->bi_io_vec[bio->bi_vcnt] = *vec++;
-		bio->bi_size += bio->bi_io_vec[bio->bi_vcnt++].bv_len;
-	}
-	submit_bio(rw, bio);
-	return 0;
-}
-
-struct biosync { struct semaphore sem; int err; };
-
-static void biosync_endio(struct bio *bio, int err)
-{
-	struct biosync *sync = bio->bi_private;
-	bio_put(bio);
-	sync->err = err;
-	up(&sync->sem);
-}
-
-int syncio(int rw, struct block_device *dev, sector_t sector, unsigned vecs, struct bio_vec *vec)
-{
-	struct biosync sync = { __SEMAPHORE_INITIALIZER(sync.sem, 0) };
-	if (!(sync.err = vecio(rw, dev, sector, biosync_endio, &sync, vecs, vec)))
-		down(&sync.sem);
-	return sync.err;
-}
-
-#define SB_SIZE 512
-
-static int junkfs_fill_super(struct super_block *sb, void *data, int silent)
-{
-	u8 *buf = kmalloc(SB_SIZE, GFP_KERNEL);
-	int i, err;
-	if (!buf)
-		return -ENOMEM;
-	if ((err = syncio(READ, sb->s_bdev, 0, 1, &(struct bio_vec){
-		.bv_page = virt_to_page(buf),
-		.bv_offset = offset_in_page(buf),
-		.bv_len = SB_SIZE })))
-		goto out;
-	printk("super = ");
-	for(i = 0; i < 16; i++)
-		printk(" %02X", buf[i]);
-	printk("\n");
-out:
-	kfree(buf);
-	return err;
 }
 
 static int tux_load_sb(struct super_block *sb, int silent)
@@ -190,9 +132,9 @@ static int tux3_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_ffree = buf->f_blocks << (sbi->clus_bits - EXFAT_CHUNK_BITS) / 3;
 	buf->f_fsid.val[0] = sbi->serial_number;
 	/*buf->f_fsid.val[1];*/
-	buf->f_namelen = TUX_NAME_LEN;
-	buf->f_frsize = sbi->blocksize;
 #endif
+	buf->f_namelen = TUX_NAME_LEN;
+//	buf->f_frsize = sbi->blocksize;
 
 	return 0;
 }
@@ -200,9 +142,9 @@ static int tux3_statfs(struct dentry *dentry, struct kstatfs *buf)
 static const struct super_operations tux3_super_ops = {
 	.alloc_inode	= tux3_alloc_inode,
 	.destroy_inode	= tux3_destroy_inode,
-	.drop_inode	= generic_delete_inode,
 	.put_super	= tux3_put_super,
 	.statfs		= tux3_statfs,
+	.clear_inode	= tux3_clear_inode,
 };
 
 static int tux3_fill_super(struct super_block *sb, void *data, int silent)

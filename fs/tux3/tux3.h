@@ -296,6 +296,8 @@ static inline map_t *mapping(struct inode *inode)
 }
 #endif /* !__KERNEL__ */
 
+#define TUX_NAME_LEN 255
+
 /* directory entry */
 typedef struct {
 	be_u32 inum;
@@ -445,7 +447,7 @@ static inline u32 high32(fixed32 val)
 
 static inline unsigned billionths(fixed32 val)
 {
-	return (((val & 0xffffffff) * 1000000000ULL) + 0x80000000) >> 32;
+	return (((val & 0xffffffff) * 1000000000) + 0x80000000) >> 32;
 }
 
 static inline struct timespec spectime(fixed32 time)
@@ -455,7 +457,7 @@ static inline struct timespec spectime(fixed32 time)
 
 static inline fixed32 tuxtime(struct timespec time)
 {
-	return ((u64)time.tv_sec << 32) + ((u64)time.tv_nsec << 32) / 1000000000ULL;
+	return ((u64)time.tv_sec << 32) + ((u64)time.tv_nsec << 32) / 1000000000;
 }
 
 static inline struct timespec gettime(void)
@@ -599,6 +601,10 @@ int dwalk_mock(struct dwalk *walk, tuxkey_t index, struct extent extent);
 int dwalk_pack(struct dwalk *walk, tuxkey_t index, struct extent extent);
 extern struct btree_ops dtree_ops;
 
+/* filemap.c */
+extern const struct address_space_operations tux_aops;
+extern const struct address_space_operations tux_dir_aops;
+
 /* iattr.c */
 unsigned encode_asize(unsigned bits);
 void dump_attrs(struct inode *inode);
@@ -612,6 +618,7 @@ int ileaf_purge(BTREE, inum_t inum, struct ileaf *leaf);
 extern struct btree_ops itable_ops;
 
 /* inode.c */
+void tux3_clear_inode(struct inode *inode);
 struct inode *tux3_iget(struct super_block *sb, inum_t inum);
 
 /* xattr.c */
@@ -624,8 +631,8 @@ unsigned decode_xsize(struct inode *inode, void *attrs, unsigned size);
 unsigned encode_xsize(struct inode *inode);
 
 /* temporary hack for buffer */
-struct buffer_head *blockread(struct address_space *mapping, block_t block);
-struct buffer_head *blockget(struct address_space *mapping, block_t block);
+struct buffer_head *blockread(struct address_space *mapping, block_t iblock);
+struct buffer_head *blockget(struct address_space *mapping, block_t iblock);
 
 static inline int buffer_empty(struct buffer_head *buffer)
 {
@@ -639,6 +646,8 @@ static inline struct buffer_head *set_buffer_empty(struct buffer_head *buffer)
 
 static inline void brelse_dirty(struct buffer_head *buffer)
 {
+	mark_buffer_dirty(buffer);
+	brelse(buffer);
 }
 #else /* !__KERNEL__ */
 static inline struct inode *buffer_inode(struct buffer_head *buffer)
