@@ -3,6 +3,7 @@
 
 #ifdef __KERNEL__
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
@@ -589,7 +590,7 @@ void *tree_expand(struct btree *btree, tuxkey_t key, unsigned newsize, struct cu
 struct btree new_btree(SB, struct btree_ops *ops);
 
 /* dir.c */
-loff_t tux_create_entry(struct inode *dir, const char *name, int len, unsigned inum, unsigned mode);
+loff_t tux_create_entry(struct inode *dir, const char *name, int len, inum_t inum, unsigned mode);
 tux_dirent *tux_find_entry(struct inode *dir, const char *name, int len, struct buffer_head **result);
 int tux_delete_entry(struct buffer_head *buffer, tux_dirent *entry);
 extern const struct file_operations tux_dir_fops;
@@ -609,7 +610,7 @@ int dwalk_pack(struct dwalk *walk, tuxkey_t index, struct extent extent);
 
 /* filemap.c */
 extern const struct address_space_operations tux_aops;
-extern const struct address_space_operations tux_dir_aops;
+extern const struct address_space_operations tux_blk_aops;
 
 /* iattr.c */
 unsigned encode_asize(unsigned bits);
@@ -626,6 +627,7 @@ extern struct btree_ops itable_ops;
 /* inode.c */
 void tux3_clear_inode(struct inode *inode);
 int tux3_write_inode(struct inode *inode, int do_sync);
+struct inode *tux_create_inode(struct inode *dir, int mode);
 struct inode *tux3_iget(struct super_block *sb, inum_t inum);
 
 /* xattr.c */

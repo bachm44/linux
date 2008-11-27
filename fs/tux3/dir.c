@@ -104,7 +104,7 @@ static unsigned char tux_type_by_mode[S_IFMT >> STAT_SHIFT] = {
 	[S_IFLNK >> STAT_SHIFT] = TUX_LNK,
 };
 
-loff_t tux_create_entry(struct inode *dir, const char *name, int len, unsigned inum, unsigned mode)
+loff_t tux_create_entry(struct inode *dir, const char *name, int len, inum_t inum, unsigned mode)
 {
 	tux_dirent *entry;
 	struct buffer_head *buffer;
@@ -112,14 +112,16 @@ loff_t tux_create_entry(struct inode *dir, const char *name, int len, unsigned i
 	unsigned blockbits = tux_sb(dir->i_sb)->blockbits, blocksize = 1 << blockbits;
 	unsigned blocks = dir->i_size >> blockbits, block;
 	for (block = 0; block < blocks; block++) {
-		buffer = blockget(mapping(dir), block);
+		buffer = blockread(mapping(dir), block);
+		if (!buffer)
+			return -EIO;
 		entry = bufdata(buffer);
 		tux_dirent *limit = bufdata(buffer) + blocksize - reclen;
 		while (entry <= limit) {
 			if (entry->rec_len == 0) {
 				warn("zero-length directory entry");
 				brelse(buffer);
-				return -1;
+				return -EIO;
 			}
 			name_len = TUX_REC_LEN(entry->name_len);
 			rec_len = tux_rec_len_from_disk(entry->rec_len);
@@ -209,9 +211,9 @@ static int tux_readdir(struct file *file, void *state, filldir_t filldir)
 	unsigned offset = pos & blockmask;
 	for (unsigned block = pos >> blockbits ; block < blocks; block++) {
 		struct buffer_head *buffer = blockread(mapping(dir), block);
-		void *base = bufdata(buffer);
 		if (!buffer)
 			return -EIO;
+		void *base = bufdata(buffer);
 		if (revalidate) {
 			if (offset) {
 				tux_dirent *entry = base + offset;
@@ -292,6 +294,36 @@ static struct dentry *tux_lookup(struct inode *dir, struct dentry *dentry,
 	return d_splice_alias(inode, dentry);
 }
 
+static int tux3_create(struct inode *dir, struct dentry *dentry, int mode,
+		       struct nameidata *nd)
+{
+	struct inode *inode;
+	loff_t where;
+	int err;
+
+	inode = tux_create_inode(dir, mode);
+	if (IS_ERR(inode)) {
+		err = PTR_ERR(inode);
+		goto error;
+	}
+
+	where = tux_create_entry(dir, dentry->d_name.name, dentry->d_name.len,
+				 tux_inode(inode)->inum, mode);
+	if (where < 0) {
+		err = where;
+		goto error;
+	}
+
+	d_instantiate(dentry, inode);
+	return 0;
+
+error:
+	/* FIXME: we may want to call purge_inum() here */
+	inode_dec_link_count(inode);
+	iput(inode);
+	return err;
+}
+
 const struct file_operations tux_dir_fops = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
@@ -299,7 +331,7 @@ const struct file_operations tux_dir_fops = {
 };
 
 const struct inode_operations tux_dir_iops = {
-//	.create		= ext3_create,
+	.create		= tux3_create,
 	.lookup		= tux_lookup,
 //	.link		= ext3_link,
 //	.unlink		= ext3_unlink,
