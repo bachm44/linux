@@ -30,10 +30,10 @@ ballocdeps	= balloc.c ../balloc.c
 btreedeps	= btree.c ../btree.c
 dirdeps		= dir.c ../dir.c
 dleafdeps	= dleaf.c ../dleaf.c
-filemapdeps	= $(ballocdeps) $(dleafdeps) $(dirdeps) $(xattrdeps) \
-	$(ileafdeps) filemap.c ../filemap.c
+filemapdeps	= $(btreedeps) $(ballocdeps) $(dleafdeps) $(dirdeps) \
+	$(xattrdeps) $(ileafdeps) filemap.c ../filemap.c
 iattrdeps	= iattr.c ../iattr.c
-ileafdeps	= ileaf.c ../ileaf.c
+ileafdeps	= $(iattrdeps) ileaf.c ../ileaf.c
 inodedeps	= $(filemapdeps) inode.c ../inode.c super.c ../super.c
 vfsdeps		= vfs.c buffer.c diskio.c
 xattrdeps	= $(ballocdeps) $(dirdeps) $(ileafdeps) xattr.c ../xattr.c
@@ -42,7 +42,7 @@ all: $(binaries)
 tests: balloctest dleaftest ileaftest btreetest dirtest iattrtest xattrtest filemaptest inodetest
 
 balloc.o: $(basedeps) $(ballocdeps)
-btree.o: $(basedeps) $(bteedeps)
+btree.o: $(basedeps) $(btreedeps)
 dir.o: $(basedeps) $(dirdeps)
 dleaf.o: $(basedeps) $(dleafdeps)
 filemap.o: $(basedeps) $(filemapdeps)
