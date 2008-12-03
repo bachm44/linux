@@ -75,7 +75,7 @@ int filemap_extent_io(struct buffer_head *buffer, int write)
 	block_t start, limit;
 	guess_extent(buffer, &start, &limit, write);
 	printf("---- extent 0x%Lx/%Lx ----\n", (L)start, (L)limit - start);
-	struct cursor *cursor = alloc_cursor(depth + 1);
+	struct cursor *cursor = alloc_cursor(depth + 2); /* +1 for new depth */
 	if (!cursor)
 		return -ENOMEM;
 
@@ -88,7 +88,7 @@ retry:
 	/* do not overlap next leaf */
 	if (limit > next_key(cursor, depth))
 		limit = next_key(cursor, depth);
-	struct dleaf *leaf = bufdata(cursor[depth].buffer);
+	struct dleaf *leaf = bufdata(cursor->path[depth].buffer);
 	struct dwalk *walk = &(struct dwalk){ };
 	dleaf_dump(&tux_inode(inode)->btree, leaf);
 	/* Probe below io start to include overlapping extents */
@@ -193,7 +193,7 @@ retry:
 			dwalk_pack(walk, index, make_extent(extent_block(seg[i]), extent_count(seg[i])));
 			index += extent_count(seg[i]);
 		}
-		mark_buffer_dirty(cursor[tux_inode(inode)->btree.root.depth].buffer);
+		mark_buffer_dirty(cursor->path[tux_inode(inode)->btree.root.depth].buffer);
 
 		//dleaf_dump(&tux_inode(inode)->btree, leaf);
 		/* assert we used exactly the expected space */
@@ -254,7 +254,7 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 	}
 
 	block_t start = iblock, limit = iblock + max_blocks;
-	struct cursor *cursor = alloc_cursor(depth + 1);
+	struct cursor *cursor = alloc_cursor(depth + 2); /* +1 for new depth */
 	if (!cursor)
 		return -ENOMEM;
 
@@ -267,7 +267,7 @@ retry:
 	/* do not overlap next leaf */
 	if (limit > next_key(cursor, depth))
 		limit = next_key(cursor, depth);
-	struct dleaf *leaf = bufdata(cursor[depth].buffer);
+	struct dleaf *leaf = bufdata(cursor->path[depth].buffer);
 	struct dwalk *walk = &(struct dwalk){ };
 	dleaf_dump(&tux_inode(inode)->btree, leaf);
 	/* Probe below io start to include overlapping extents */
@@ -361,7 +361,7 @@ retry:
 			dwalk_pack(walk, index, make_extent(extent_block(seg[i]), extent_count(seg[i])));
 			index += extent_count(seg[i]);
 		}
-		mark_buffer_dirty(cursor[tux_inode(inode)->btree.root.depth].buffer);
+		mark_buffer_dirty(cursor->path[tux_inode(inode)->btree.root.depth].buffer);
 
 		//dleaf_dump(&tux_inode(inode)->btree, leaf);
 		/* assert we used exactly the expected space */
