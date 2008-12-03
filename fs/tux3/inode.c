@@ -53,7 +53,7 @@ int store_attrs(struct inode *inode, struct cursor *cursor)
 
 int make_inode(struct inode *inode, struct tux_iattr *iattr)
 {
-	SB = tux_sb(inode->i_sb);
+	struct sb *sb = tux_sb(inode->i_sb);
 	int err = -ENOENT, depth = sb->itable.root.depth;
 	struct cursor *cursor = alloc_cursor(depth + 2); /* +1 for now depth */
 	if (!cursor)
@@ -97,13 +97,13 @@ int make_inode(struct inode *inode, struct tux_iattr *iattr)
 	tux_inode(inode)->btree = new_btree(sb, &dtree_ops); // error???
 	tux_inode(inode)->present = CTIME_SIZE_BIT|MODE_OWNER_BIT|DATA_BTREE_BIT;
 	if ((err = store_attrs(inode, cursor)))
-		goto eek;
+		goto errout;
 	release_cursor(cursor);
 	free_cursor(cursor);
 	return 0;
-eek:
-	release_cursor(cursor);
+
 errout:
+	/* release_cursor() was already called at error point */
 	free_cursor(cursor);
 	warn("make_inode 0x%Lx failed (%d)", (L)tux_inode(inode)->inum, err);
 	return err;
@@ -111,7 +111,7 @@ errout:
 
 static int open_inode(struct inode *inode)
 {
-	SB = tux_sb(inode->i_sb);
+	struct sb *sb = tux_sb(inode->i_sb);
 	int err, depth = sb->itable.root.depth;
 	struct cursor *cursor = alloc_cursor(depth + 1);
 	if (!cursor)
@@ -148,7 +148,7 @@ eek:
 int save_inode(struct inode *inode)
 {
 	trace("save inode 0x%Lx", (L)tux_inode(inode)->inum);
-	SB = tux_sb(inode->i_sb);
+	struct sb *sb = tux_sb(inode->i_sb);
 	int err, depth = sb->itable.root.depth;
 	struct cursor *cursor = alloc_cursor(depth + 2); /* +1 for new depth */
 	if (!cursor)
@@ -162,12 +162,16 @@ int save_inode(struct inode *inode)
 	if (!(ileaf_lookup(&sb->itable, tux_inode(inode)->inum, bufdata(cursor->path[depth].buffer), &size)))
 		return -EINVAL;
 	err = store_attrs(inode, cursor);
+	if (err)
+		goto error;
+	/* release_cursor() was already called at error point */
 	release_cursor(cursor);
+error:
 	free_cursor(cursor);
 	return err;
 }
 
-int purge_inum(BTREE, inum_t inum)
+int purge_inum(struct btree *btree, inum_t inum)
 {
 	int err = -ENOENT, depth = btree->root.depth;
 	struct cursor *cursor = alloc_cursor(depth + 1);
