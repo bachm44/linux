@@ -187,6 +187,59 @@ int purge_inum(struct btree *btree, inum_t inum)
 }
 
 #ifdef __KERNEL__
+static int tux_can_truncate(struct inode *inode)
+{
+	if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
+		return 0;
+	if (S_ISREG(inode->i_mode))
+		return 1;
+	if (S_ISDIR(inode->i_mode))
+		return 1;
+	if (S_ISLNK(inode->i_mode))
+		return 1;
+	return 0;
+}
+
+static void tux3_truncate(struct inode *inode)
+{
+	struct sb *sb = tux_sb(inode->i_sb);
+	struct delete_info del_info = {
+		.key = (inode->i_size + sb->blockmask) >> sb->blockbits,
+	};
+	int err;
+
+	if (!tux_can_truncate(inode))
+		return;
+	/* FIXME: must fix dleaf_chop bug, and expand size */
+	WARN_ON(inode->i_size);
+	block_truncate_page(inode->i_mapping, inode->i_size, tux3_get_block);
+	err = tree_chop(&tux_inode(inode)->btree, &del_info, 0);
+	inode->i_blocks = ((inode->i_size + sb->blockmask)
+			   & ~(loff_t)sb->blockmask) >> 9;
+	inode->i_mtime = inode->i_ctime = gettime();
+	mark_inode_dirty(inode);
+}
+
+void tux3_delete_inode(struct inode *inode)
+{
+	struct sb *sb = tux_sb(inode->i_sb);
+	inum_t inum = tux_inode(inode)->inum;
+
+	truncate_inode_pages(&inode->i_data, 0);
+	if (is_bad_inode(inode)) {
+		clear_inode(inode);
+		return;
+	}
+	inode->i_size = 0;
+	if (inode->i_blocks)
+		tux3_truncate(inode);
+
+	/* clear_inode() before freeing this ino. */
+	clear_inode(inode);
+
+	purge_inum(&sb->itable, inum);
+}
+
 void tux3_clear_inode(struct inode *inode)
 {
 	if (tux_inode(inode)->xcache)
@@ -219,7 +272,7 @@ static const struct file_operations tux_file_fops = {
 };
 
 static const struct inode_operations tux_file_iops = {
-//	.truncate	= ext4_truncate,
+	.truncate	= tux3_truncate,
 //	.permission	= ext4_permission,
 //	.setattr	= ext4_setattr,
 //	.getattr	= ext4_getattr
@@ -263,8 +316,8 @@ static void tux3_setup_inode(struct inode *inode)
 		mapping_set_gfp_mask(inode->i_mapping, GFP_USER);
 		break;
 	case S_IFLNK:
-//		inode->i_op = &tux_symlink_iops;
-//		inode->i_mapping->a_ops = &tux_aops;
+		inode->i_op = &page_symlink_inode_operations;
+		inode->i_mapping->a_ops = &tux_aops;
 		break;
 	case 0:
 		/* FIXME: bitmap, vtable, atable doesn't have S_IFMT */
@@ -296,8 +349,11 @@ struct inode *tux_create_inode(struct inode *dir, int mode)
 	iattr.ctime = iattr.mtime = iattr.atime = gettime();
 
 	int err = make_inode(inode, &iattr);
-	if (err)
+	if (err) {
+		make_bad_inode(inode);
+		iput(inode);
 		return ERR_PTR(err);
+	}
 	tux3_setup_inode(inode);
 	insert_inode_hash(inode);
 	return inode;
