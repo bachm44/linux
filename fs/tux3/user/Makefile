@@ -28,7 +28,7 @@ basedeps	= Makefile err.h buffer.h diskio.h list.h trace.h \
 	../trace.h tux3.h ../tux3.h hexdump.c ../hexdump.c
 ballocdeps	= balloc.c ../balloc.c
 btreedeps	= btree.c ../btree.c
-dirdeps		= dir.c ../dir.c ../namei.c
+dirdeps		= dir.c ../dir.c
 dleafdeps	= dleaf.c ../dleaf.c
 filemapdeps	= $(btreedeps) $(ballocdeps) $(dleafdeps) $(dirdeps) \
 	$(xattrdeps) $(ileafdeps) filemap.c ../filemap.c
