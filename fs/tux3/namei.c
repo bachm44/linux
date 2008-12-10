@@ -3,16 +3,21 @@
 static struct dentry *tux3_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
 	struct buffer_head *buffer;
-	struct inode *inode = NULL;
+	struct inode *inode;
 	tux_dirent *entry;
 
 	entry = tux_find_entry(dir, dentry->d_name.name, dentry->d_name.len, &buffer);
-	if (entry) {
-		inode = tux3_iget(dir->i_sb, from_be_u32(entry->inum));
-		brelse(buffer);
-		if (IS_ERR(inode))
-			return ERR_CAST(inode);
+	if (IS_ERR(entry)) {
+		if (PTR_ERR(entry) != -ENOENT)
+			return ERR_CAST(entry);
+		inode = NULL;
+		goto out;
 	}
+	inode = tux3_iget(dir->i_sb, from_be_u32(entry->inum));
+	brelse(buffer);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
+out:
 	return d_splice_alias(inode, dentry);
 }
 
@@ -130,7 +135,7 @@ static int tux3_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 		new_de = tux_find_entry(new_dir, new_dentry->d_name.name,
 			new_dentry->d_name.len, &new_buffer);
-		if IS_ERR(new_de))
+		if (IS_ERR(new_de))
 			return PTR_ERR(old_de);
 
 		if ((err = tux_delete_entry(new_buffer, new_de)))
@@ -152,9 +157,9 @@ static int tux3_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (err)
 			return err;
 	}
-	old_inode->i_ctime = CURRENT_TIME_SEC;
+	old_inode->i_ctime = gettime();
 	tux_delete_entry(old_buffer, old_de);
-	return err;
+	return 0;
 }
 
 static int tux3_rmdir(struct inode *dir, struct dentry *dentry)
