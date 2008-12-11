@@ -40,12 +40,15 @@ static int tux_del_dirent(struct inode *dir, struct dentry *dentry)
 	return IS_ERR(entry) ? PTR_ERR(entry) : tux_delete_entry(buffer, entry);
 }
 
-static int tux3_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidata *nd)
+static int tux3_mknod(struct inode *dir, struct dentry *dentry, int mode, dev_t rdev)
 {
 	struct inode *inode;
 	int err;
 
-	inode = tux_create_inode(dir, mode, 0);
+//	if (!huge_valid_dev(rdev))
+//		return -EINVAL;
+
+	inode = tux_create_inode(dir, mode, rdev);
 	err = PTR_ERR(inode);
 	if (!IS_ERR(inode)) {
 		err = tux_add_dirent(dir, dentry, inode);
@@ -57,9 +60,20 @@ static int tux3_create(struct inode *dir, struct dentry *dentry, int mode, struc
 	return err;
 }
 
+static int tux3_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidata *nd)
+{
+	return tux3_mknod(dir, dentry, mode, 0);
+}
+
 static int tux3_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 {
-	return tux3_create(dir, dentry, S_IFDIR | mode, NULL);
+	int err;
+	if (dir->i_nlink >= TUX_LINK_MAX)
+		return -EMLINK;
+	err = tux3_mknod(dir, dentry, S_IFDIR | mode, 0);
+	if (!err)
+		inode_inc_link_count(dir);
+	return err;
 }
 
 static int tux3_link(struct dentry *old_dentry, struct inode *dir,
@@ -107,10 +121,26 @@ static int tux3_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct inode *inode = dentry->d_inode;
 	int err = tux_del_dirent(dir, dentry);
-
 	if (!err) {
 		inode->i_ctime = dir->i_ctime;
 		inode_dec_link_count(inode);
+	}
+	return err;
+}
+
+static int tux3_rmdir(struct inode *dir, struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+	int err = -ENOTEMPTY;
+	if (tux_dir_is_empty(inode)) {
+		err = tux_del_dirent(dir, dentry);
+		if (!err) {
+			inode->i_ctime = dir->i_ctime;
+			inode->i_size = 0;
+			clear_nlink(inode);
+			mark_inode_dirty(inode);
+			inode_dec_link_count(dir);
+		}
 	}
 	return err;
 }
@@ -162,25 +192,6 @@ static int tux3_rename(struct inode *old_dir, struct dentry *old_dentry,
 	return 0;
 }
 
-static int tux3_rmdir(struct inode *dir, struct dentry *dentry)
-{
-	struct inode *inode = dentry->d_inode;
-	int err = -ENOTEMPTY;
-
-	if (tux_dir_is_empty(inode)) {
-
-		err = tux_del_dirent(dir, dentry);
-
-		if (!err) {
-			inode->i_ctime = dir->i_ctime;
-			inode->i_size = 0;
-			inode_dec_link_count(inode);
-			inode_dec_link_count(dir);
-		}
-	}
-	return err;
-}
-
 const struct file_operations tux_dir_fops = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
@@ -195,9 +206,10 @@ const struct inode_operations tux_dir_iops = {
 	.symlink	= tux3_symlink,
 	.mkdir		= tux3_mkdir,
 	.rmdir		= tux3_rmdir,
-//	.mknod		= ext3_mknod,
+	.mknod		= tux3_mknod,
 	.rename		= tux3_rename,
 //	.setattr	= ext3_setattr,
+	.getattr	= tux3_getattr
 //	.setxattr	= generic_setxattr,
 //	.getxattr	= generic_getxattr,
 //	.listxattr	= ext3_listxattr,
