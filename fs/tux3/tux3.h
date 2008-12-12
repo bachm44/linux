@@ -116,13 +116,14 @@ static inline void *decode48(void *at, u64 *val)
 
 /* Tux3 disk format */
 #define SB_MAGIC_SIZE 8
-#define SB_MAGIC { 't', 'u', 'x', '3', 0xdd, 0x08, 0x09, 0x06 } /* date of latest incompatible sb format */
+#define SB_MAGIC { 't', 'u', 'x', '3', 0xdd, 0x08, 0x12, 0x12 } /* date of latest incompatible sb format */
 /*
  * disk format revision history
  * !!! always update this for every incompatible change !!!
  *
  * 2008-08-06: Beginning of time
  * 2008-09-06: Actual checking starts
+ * 2008-12-12: Atom dictionary size in disksuper instead of atable->i_size
  */
 
 #define MAX_INODES_BITS 48
@@ -154,7 +155,9 @@ struct disksuper
 	/* The rest should be moved to a "metablock" that is updated frequently */
 	be_u64 freeblocks;	/* Should match total of zero bits in allocation bitmap */
 	be_u64 nextalloc;	/* Get rid of this when we have a real allocation policy */
-	be_u32 freeatom, atomgen;
+	be_u32 freeatom;	/* Beginning of persistent free atom list in atable */
+	be_u32 atomgen;		/* Next atom number if there are no free atoms */
+	be_u64 dictsize;	/* Size of the atom dictionary instead if i_size */
 };
 
 struct root {
@@ -214,6 +217,7 @@ struct sb {
 	unsigned atomref_base, unatom_base; /* layout of atom table */
 	unsigned freeatom;	/* Start of free atom list in atom table */
 	unsigned atomgen;	/* Next atom number to allocate if no free atoms */
+	loff_t dictsize;	/* Atom dictionary size */
 #ifdef __KERNEL__
 	struct super_block *vfs_sb; /* Generic kernel superblock */
 #else
@@ -280,7 +284,7 @@ typedef struct inode {
 	struct xcache *xcache;
 	struct sb *i_sb;
 	map_t *map;
-	u64 i_size;
+	loff_t i_size;
 	unsigned i_version;
 	struct timespec i_mtime, i_ctime, i_atime;
 	unsigned i_mode, i_uid, i_gid, i_nlink;
@@ -661,6 +665,7 @@ int tux3_write_inode(struct inode *inode, int do_sync);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
 struct inode *tux_create_inode(struct inode *dir, int mode, dev_t rdev);
 struct inode *tux3_iget(struct super_block *sb, inum_t inum);
+int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
 /* symlink.c */
 extern const struct inode_operations tux_symlink_iops;
