@@ -19,7 +19,12 @@
 #define trace trace_on
 #endif
 
-#include "tux3.h"	/* include user/tux3.h, not fs/tux3/tux3.h */
+#include "tux3.h"
+#ifndef main
+#define MAX_GROUP_ENTRIES 7
+#else
+#define MAX_GROUP_ENTRIES 255
+#endif
 #include "../dleaf.c"
 
 #ifndef main
