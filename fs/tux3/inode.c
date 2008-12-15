@@ -313,6 +313,7 @@ void tux3_delete_inode(struct inode *inode)
 	inode->i_size = 0;
 	if (inode->i_blocks)
 		tux3_truncate(inode);
+	/* FIXME: we have to free dtree-root, atable entry, etc too */
 
 	/* clear_inode() before freeing this ino. */
 	clear_inode(inode);
@@ -345,18 +346,11 @@ int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat
 int tux3_setattr(struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = dentry->d_inode;
-	tuxnode_t *tuxnode = tux_inode(inode);
-	int error;
+	int err;
 
-	error = inode_change_ok(inode, iattr);
-	if (error)
-		return error;
-	if (timespec_equal(iattr->ia_valid & ATTR_MTIME ? &iattr->ia_mtime : &inode->i_mtime,
-			   iattr->ia_valid & ATTR_CTIME ? &iattr->ia_ctime : &inode->i_ctime))
-		tuxnode->present &= ~MTIME_BIT;
-	else
-		tuxnode->present |= MTIME_BIT;
-
+	err = inode_change_ok(inode, iattr);
+	if (err)
+		return err;
 	return inode_setattr(inode, iattr);
 }
 

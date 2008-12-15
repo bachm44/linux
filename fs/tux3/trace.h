@@ -14,10 +14,19 @@
 	printf("\n");				\
 } while (0)
 
-#define error(string, args...) ({ warn(string "!", ##args); die(99); 1; })
+#define error(fmt, args...) ({ warn(fmt "!" , ##args); die(99); 1; })
 #define assert(expr) do { if (!(expr)) error("Failed assertion \"%s\"", #expr); } while (0)
-#define warn(string, args...) do { logline(__func__, string, ##args); } while (0)
+#define warn(fmt, args...) do { logline(__func__, fmt , ##args); } while (0)
 #define trace_off(...) do {} while (0)
-#define trace_on(fmt, args...) warn(fmt, ## args)
+#define trace_on(fmt, args...) warn(fmt , ##args)
+
+/*
+ * FIXME: this may want to change behavior by mount option.
+ * NOTE: don't assume this calls die().
+ */
+#define tux_error(sb, fmt, args...) do {	\
+	warn(fmt , ##args);			\
+	die(100);				\
+} while (0)
 
 #endif
