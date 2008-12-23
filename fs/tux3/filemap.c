@@ -23,11 +23,12 @@ static void dwalk_seek(struct dwalk *walk, tuxkey_t key)
 
 struct seg { block_t block; int count; };
 
+/* userland only */
 void show_segs(struct seg seglist[], unsigned segs)
 {
 	printf("%i segs: ", segs);
 	for (int i = 0; i < segs; i++)
-		printf("%Lx/%i ", seglist[i].block, seglist[i].count);
+		printf("%Lx/%i ", (L)seglist[i].block, seglist[i].count);
 	printf("\n");
 }
 
@@ -83,7 +84,6 @@ static int find_segs(struct cursor *cursor, block_t start, unsigned limit,
 				below = start - next_index;
 				next_index = start;
 			} else if (next_index >= limit) {
-				above = start - next_index;
 				next_extent = NULL;
 				dwalk_back(walk);
 			} else if (next_index + next_count > limit) {
@@ -103,13 +103,12 @@ static int find_segs(struct cursor *cursor, block_t start, unsigned limit,
 		}
 	}
 	trace("\n");
-	dwalk_dump(walk);
 	trace("below = %i, above = %i", below, above);
 	seek[1] = *walk;
 	if (segs) {
 		seg[0].block += below;
 		seg[0].count -= below;
-//		seg[segs - 1].count -= above;
+		seg[segs - 1].count -= above;
 		if (overlap) {
 			overlap[0] = below;
 			overlap[1] = above;
@@ -145,7 +144,7 @@ static int fill_segs(struct cursor *cursor, block_t start, unsigned limit,
 		if (count < 0) {
 			count = -count;
 			block_t block = balloc_extent(sb, count); // goal ???
-			trace("fill in %Lx/%i ", block, count);
+			trace("fill in %Lx/%i ", (L)block, count);
 			if (block == -1) {
 				/*
 				 * Out of space on file data allocation.  It happens.  Tread
