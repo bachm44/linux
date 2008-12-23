@@ -253,9 +253,10 @@ int dleaf_split_at(vleaf *from, vleaf *into, struct entry *entry, unsigned block
 	unsigned entries = edict - ebase, split = edict - 1 - entry;
 
 	printf("split %p into %p at %x\n", leaf, leaf2, split);
-	if (split == -1)
+	if (!groups)
 		return 0;
-	assert(split <= entries);
+	assert(ebase <= entry && entry < edict);
+	assert(split < entries);
 	for (struct group *group = gdict - 1; group >= gbase; group--, grsplit++) {
 		if (recount + group_count(group) > split)
 			break;
@@ -312,15 +313,15 @@ int dleaf_split_at(vleaf *from, vleaf *into, struct entry *entry, unsigned block
  */
 static tuxkey_t dleaf_split(struct btree *btree, tuxkey_t key, vleaf *from, vleaf *into)
 {
+	struct dleaf *leaf = to_dleaf(from), *leaf2 = to_dleaf(into);
 	assert(dleaf_sniff(btree, from));
 	unsigned blocksize = btree->sb->blocksize;
-	struct dleaf *leaf = from;
 	struct group *gdict = from + blocksize, *gbase = gdict - dleaf_groups(leaf);
 	struct entry *edict = (void *)gbase;
 	struct entry *ebase = (void *)leaf + from_be_u16(leaf->used);
 	unsigned entries = edict - ebase;
 	unsigned groups2 = dleaf_split_at(from, into, edict - entries / 2, blocksize);
-	struct group *gdict2 = into + blocksize;
+	struct group *gdict2 = (void *)leaf2 + blocksize;
 	return get_index(gdict2 - 1, (struct entry *)(gdict2 - groups2) - 1);
 }
 
@@ -404,7 +405,8 @@ struct btree_ops dtree_ops = {
  *      ->exbase is the first extent in current group
  *      ->extent is the current extent (extent <1> (gr1, ent 1)).
  *      ->exstop is the first extent in next entry.
- *        (i.e. the address that dwalk_next() has to update to next entry.)
+ *        (I.e. the address that dwalk_next() has to update to next entry.
+ *        If there is no next, it will stop with ->extent == ->exstop.)
  */
 
 /* FIXME: current code is assuming the entry has only one extent. */
@@ -533,7 +535,7 @@ int dwalk_back(struct dwalk *walk)
 /*
  * Probe the extent position with key. If not found, position is next
  * extent of key.  If probed all extents return 0, otherwise return 1
- * (i.e. next extent is available).
+ * (I.e. current extent is valid. IOW, !dwalk_end()).
  */
 int dwalk_probe(struct dleaf *leaf, unsigned blocksize, struct dwalk *walk, tuxkey_t key)
 {
@@ -704,39 +706,48 @@ void dwalk_chop(struct dwalk *walk)
 /*
  * Add extent to dleaf. This can use only if dwalk_end() is true.
  * Note, dwalk state is invalid after this.  (I.e. it can be used only
- * for dwalk_pack())
+ * for dwalk_add())
  */
-int dwalk_pack(struct dwalk *walk, tuxkey_t index, struct diskextent extent)
+int dwalk_add(struct dwalk *walk, tuxkey_t index, struct diskextent extent)
 {
-	trace("group %ti/%i", walk->gstop + dleaf_groups(walk->leaf) - 1 - walk->group, dleaf_groups(walk->leaf));
-	//printf("at entry %ti/%i\n", walk->estop + group_count(walk->group) - 1 - walk->entry, group_count(walk->group));
-	if (!dleaf_groups(walk->leaf) || walk->entry == walk->estop || dwalk_index(walk) != index) {
+	struct dleaf *leaf = walk->leaf;
+	unsigned groups = dleaf_groups(leaf);
+	unsigned free = from_be_u16(leaf->free);
+	unsigned used = from_be_u16(leaf->used);
+
+	/* FIXME: assume entry has only one extent */
+	assert(!groups || dwalk_index(walk) != index);
+
+	trace("group %ti/%i", walk->gstop + groups - 1 - walk->group, groups);
+	if (!groups || dwalk_index(walk) != index) {
 		trace("add entry 0x%Lx", (L)index);
 		unsigned keylo = index & 0xffffff, keyhi = index >> 24;
-		if (!dleaf_groups(walk->leaf) || group_keyhi(walk->group) != keyhi || group_count(walk->group) >= MAX_GROUP_ENTRIES) {
-			trace("add group %i", dleaf_groups(walk->leaf));
+		if (!groups || group_keyhi(walk->group) != keyhi || group_count(walk->group) >= MAX_GROUP_ENTRIES) {
+			trace("add group %i", groups);
 			/* will it fit? */
-			assert(sizeof(struct entry) == sizeof(struct group));
-			assert(from_be_u16(walk->leaf->free) <= from_be_u16(walk->leaf->used) - sizeof(*walk->entry));
+			assert(sizeof(*walk->entry) == sizeof(*walk->group));
+			assert(free <= used - sizeof(*walk->entry));
 			/* move entries down, adjust walk state */
 			/* could preplan this to avoid move: need additional pack state */
 			vecmove(walk->entry - 1, walk->entry, (struct entry *)walk->group - walk->entry);
 			walk->entry--; /* adjust to moved position */
-			walk->exbase += dleaf_groups(walk->leaf) ? entry_limit(walk->entry) : 0;
+			walk->exbase += groups ? entry_limit(walk->entry) : 0;
 			*--walk->group = make_group(keyhi, 0);
-			walk->leaf->used = to_be_u16(from_be_u16(walk->leaf->used) - sizeof(struct group));
-			inc_dleaf_groups(walk->leaf, 1);
+			used -= sizeof(*walk->group);
+			set_dleaf_groups(leaf, ++groups);
 		}
-		assert(from_be_u16(walk->leaf->free) <= from_be_u16(walk->leaf->used) - sizeof(*walk->entry));
-		walk->leaf->used = to_be_u16(from_be_u16(walk->leaf->used) - sizeof(struct entry));
+		assert(free <= used - sizeof(*walk->entry));
+		used -= sizeof(*walk->entry);
+		leaf->used = to_be_u16(used);
 		*--walk->entry = make_entry(keylo, walk->extent - walk->exbase);
 		inc_group_count(walk->group, 1);
 	}
-	trace("add extent %ti", walk->extent - walk->leaf->table);
-	//trace("add extent 0x%Lx => 0x%Lx/%x", (L)index, (L)extent.block, extent_count(extent));
-	assert(from_be_u16(walk->leaf->free) + sizeof(*walk->extent) <= from_be_u16(walk->leaf->used));
-	walk->leaf->free = to_be_u16(from_be_u16(walk->leaf->free) + sizeof(*walk->extent));
+	trace("add extent %ti", walk->extent - leaf->table);
+	assert(free + sizeof(*walk->extent) <= used);
+	free += sizeof(*walk->extent);
+	leaf->free = to_be_u16(free);
 	*walk->extent++ = extent;
 	inc_entry_limit(walk->entry, 1);
+
 	return 0; // extent out of order??? leaf full???
 }
