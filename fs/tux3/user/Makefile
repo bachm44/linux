@@ -137,5 +137,8 @@ unbork:
 	sudo umount -l $(TESTDIR)/test
 
 clean:
-	rm -f $(binaries) *.o a.out foodev $(TESTDIR)/testdev *.orig
-	rm -f ../*.o ../*.orig
+	rm -f $(binaries) *.o a.out foodev $(TESTDIR)/testdev
+	rm -f ../*.o
+
+distclean: clean
+	rm -f *.orig ../*.orig
