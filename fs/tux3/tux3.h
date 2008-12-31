@@ -489,23 +489,9 @@ static inline struct timespec spectime(fixed32 time)
 
 static inline fixed32 tuxtime(struct timespec time)
 {
-	return ((u64)time.tv_sec << 32) + ((u64)time.tv_nsec << 32) / 1000000000;
+	u64 mult = ((1ULL << 63) / 1000000000ULL);
+	return ((u64)time.tv_sec << 32) + ((time.tv_nsec * mult + (3 << 29)) >> 31);
 }
-
-static inline struct timespec gettime(void)
-{
-#ifdef __KERNEL__
-	return current_kernel_time();
-#else
-	struct timeval now;
-	gettimeofday(&now, NULL);
-	return (struct timespec){ .tv_sec = now.tv_sec, .tv_nsec = now.tv_usec * 1000 };
-#endif
-}
-
-struct tux_iattr {
-	unsigned mode, uid, gid;
-};
 
 void hexdump(void *data, unsigned size);
 block_t balloc(struct sb *sb, unsigned blocks);
@@ -578,6 +564,15 @@ struct delete_info {
 };
 
 #ifdef __KERNEL__
+static inline struct timespec gettime(void)
+{
+	return current_kernel_time();
+}
+
+struct tux_iattr {
+	unsigned mode, uid, gid;
+};
+
 static inline void *bufdata(struct buffer_head *buffer)
 {
 	return buffer->b_data;
