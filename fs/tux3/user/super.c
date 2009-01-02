@@ -14,7 +14,7 @@
 #define trace trace_on
 #endif
 
-#include "../super.c"
+#include "../commit.c"
 
 int load_sb(struct sb *sb)
 {
