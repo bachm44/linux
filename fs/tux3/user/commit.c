@@ -16,7 +16,7 @@
 #include "../hexdump.c"
 #include "../balloc.c"
 
-struct logblock { be_u16 magic, bytes; unsigned char data[]; };
+struct logblock { be_u16 magic, bytes; be_u64 prevlog; unsigned char data[]; };
 
 enum { LOG_ALLOC, LOG_FREE };
 
