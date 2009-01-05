@@ -1,33 +1,21 @@
+#include "tux3.h"
+
 #ifndef trace
 #define trace trace_on
 #endif
 
-#define main notmain0
-#include "balloc.c"
-#undef main
+#include "../balloc.c"
+#include "../dleaf.c"
 
-#define main notmain1
-#include "dleaf.c"
-#undef main
-
-#define main notmain3
+#define main notmain
 #include "dir.c"
 #undef main
 
-#define main notmain2
-#include "xattr.c"
-#undef main
-
-#define main notmain4
-#include "btree.c"
-#undef main
-
-#define iattr_notmain_from_inode
-#define main iattr_notmain_from_inode
-#include "ileaf.c"
-#undef main
-
-#include "tux3.h"	/* include user/tux3.h, not fs/tux3/tux3.h */
+#include "../xattr.c"
+#include "diskio.h"
+#include "../btree.c"
+#include "../iattr.c"
+#include "../ileaf.c"
 #include "../filemap.c"
 
 /*
