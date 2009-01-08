@@ -10,6 +10,10 @@
 #include <linux/buffer_head.h>
 #include <linux/mutex.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+#include <linux/cred.h> // fsuid
+#endif
+
 typedef loff_t block_t;
 
 #define printf printk
@@ -679,6 +683,7 @@ int ileaf_purge(struct btree *btree, inum_t inum, struct ileaf *leaf);
 extern struct btree_ops itable_ops;
 
 /* inode.c */
+struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev);
 void tux3_delete_inode(struct inode *inode);
 void tux3_clear_inode(struct inode *inode);
 int tux3_write_inode(struct inode *inode, int do_sync);

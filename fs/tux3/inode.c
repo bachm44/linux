@@ -67,8 +67,8 @@ static void tux_setup_inode(struct inode *inode, dev_t rdev)
 }
 #endif
 
-static struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr,
-				   dev_t rdev)
+struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr,
+			    dev_t rdev)
 {
 	struct inode *inode = new_inode(dir->i_sb);
 	if (!inode)
@@ -329,6 +329,7 @@ void tux3_clear_inode(struct inode *inode)
 int tux3_write_inode(struct inode *inode, int do_sync)
 {
 	BUG_ON(tux_inode(inode)->inum == TUX_BITMAP_INO ||
+	       tux_inode(inode)->inum == TUX_INVALID_INO ||
 	       tux_inode(inode)->inum == TUX_VTABLE_INO ||
 	       tux_inode(inode)->inum == TUX_ATABLE_INO);
 	return save_inode(inode);
@@ -441,7 +442,7 @@ static void tux_setup_inode(struct inode *inode, dev_t rdev)
 		inode->i_mapping->a_ops = &tux_aops;
 		break;
 	case 0:
-		/* FIXME: bitmap, vtable, atable doesn't have S_IFMT */
+		/* FIXME: bitmap, logmap, vtable, atable doesn't have S_IFMT */
 		/* set fake i_size to escape the check of read/writepage */
 		inode->i_size = MAX_LFS_FILESIZE;
 		inode->i_mapping->a_ops = &tux_blk_aops;
@@ -454,8 +455,13 @@ static void tux_setup_inode(struct inode *inode, dev_t rdev)
 struct inode *tux_create_inode(struct inode *dir, int mode, dev_t rdev)
 {
 	struct tux_iattr iattr = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+		.uid	= current_fsuid(),
+		.gid	= current_fsgid(),
+#else
 		.uid	= current->fsuid,
 		.gid	= current->fsgid,
+#endif
 		.mode	= mode,
 	};
 	struct inode *inode = tux_new_inode(dir, &iattr, rdev);

@@ -209,9 +209,8 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 	struct sb *sb = tux_sb(inode->i_sb);
 	size_t max_blocks = bh_result->b_size >> inode->i_blkbits;
 	struct btree *btree = &tux_inode(inode)->btree;
-	int depth = btree->root.depth;
-	if (!depth) {
-		warn("Uninitialized inode %lx", inode->i_ino);
+	if (!btree->root.depth) {
+		assert(create && sb->logmap == inode);
 		return 0;
 	}
 
@@ -328,8 +327,7 @@ struct buffer_head *blockget(struct address_space *mapping, block_t iblock)
 	if (err)
 		return NULL;
 
-	if (!page_has_buffers(page))
-		create_empty_buffers(page, tux_sb(inode->i_sb)->blocksize, 0);
+	assert(page_has_buffers(page));
 
 	bh = page_buffers(page);
 	while (offset--)
