@@ -103,6 +103,7 @@ static void tux3_put_super(struct super_block *sb)
 
 	iput(sbi->atable);
 	iput(sbi->bitmap);
+	iput(sbi->volmap);
 	iput(sbi->logmap);
 
 	sb->s_fs_info = NULL;
@@ -191,41 +192,48 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	printk("%s: s_blocksize %lu\n", __func__, sb->s_blocksize);
 
+	err = -ENOMEM;
+	sbi->volmap = tux_new_volmap(tux_sb(sb));
+	if (!sbi->volmap)
+		goto error;
+
 //	struct inode *vtable;
 	sbi->bitmap = tux3_iget(sb, TUX_BITMAP_INO);
 	err = PTR_ERR(sbi->bitmap);
 	if (IS_ERR(sbi->bitmap))
-		goto error;
+		goto error_bitmap;
 
 	sbi->rootdir = tux3_iget(sb, TUX_ROOTDIR_INO);
 	err = PTR_ERR(sbi->rootdir);
 	if (IS_ERR(sbi->rootdir))
-		goto error_bitmap;
+		goto error_rootdir;
 
 	sbi->atable = tux3_iget(sb, TUX_ATABLE_INO);
 	err = PTR_ERR(sbi->atable);
 	if (IS_ERR(sbi->atable))
-		goto error_rootdir;
+		goto error_atable;
 
 	err = -ENOMEM;
 	sbi->logmap = tux_new_inode(sbi->rootdir, &iattr, 0);
 	if (!sbi->logmap)
-		goto error_atable;
+		goto error_logmap;
 
 	sb->s_root = d_alloc_root(sbi->rootdir);
 	if (!sb->s_root)
-		goto error_logmap;
+		goto error_alloc_root;
 
 	return 0;
 
-error_logmap:
+error_alloc_root:
 	iput(sbi->logmap);
-error_atable:
+error_logmap:
 	iput(sbi->atable);
-error_rootdir:
+error_atable:
 	iput(sbi->rootdir);
-error_bitmap:
+error_rootdir:
 	iput(sbi->bitmap);
+error_bitmap:
+	iput(sbi->volmap);
 error:
 	kfree(sbi);
 	return err;
@@ -259,6 +267,6 @@ static void __exit exit_tux3(void)
 	tux3_destroy_inodecache();
 }
 
-module_init(init_tux3)
-module_exit(exit_tux3)
+module_init(init_tux3);
+module_exit(exit_tux3);
 MODULE_LICENSE("GPL");

@@ -230,6 +230,7 @@ struct sb {
 	unsigned freeatom;	/* Start of free atom list in atom table */
 	unsigned atomgen;	/* Next atom number to allocate if no free atoms */
 	loff_t dictsize;	/* Atom dictionary size */
+	struct inode *volmap;	/* Volume metadata cache */
 	struct inode *logmap;	/* Prototype log block cache */
 	unsigned lognext;	/* Index of next log block in log map */
 	struct buffer_head *logbuf; /* Cached log block */
@@ -238,7 +239,7 @@ struct sb {
 #ifdef __KERNEL__
 	struct super_block *vfs_sb; /* Generic kernel superblock */
 #else
-	map_t *devmap; /* Userspace device block cache */
+	struct dev *dev;		/* userspace block device */
 #endif
 };
 
@@ -669,6 +670,7 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 extern const struct address_space_operations tux_aops;
 extern const struct address_space_operations tux_blk_aops;
+extern const struct address_space_operations tux_vol_aops;
 
 /* iattr.c */
 unsigned encode_asize(unsigned bits);
@@ -684,6 +686,7 @@ extern struct btree_ops itable_ops;
 
 /* inode.c */
 struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev);
+struct inode *tux_new_volmap(struct sb *sb);
 void tux3_delete_inode(struct inode *inode);
 void tux3_clear_inode(struct inode *inode);
 int tux3_write_inode(struct inode *inode, int do_sync);
