@@ -36,7 +36,7 @@ filemapdeps	= $(btreedeps) $(ballocdeps) $(dleafdeps) $(dirdeps) \
 	$(xattrdeps) $(ileafdeps) filemap.c ../filemap.c
 iattrdeps	= iattr.c ../iattr.c
 ileafdeps	= $(iattrdeps) ileaf.c ../ileaf.c
-inodedeps	= $(filemapdeps) inode.c ../inode.c
+inodedeps	= $(filemapdeps) inode.c ../inode.c super.c
 superdeps	= $(inodedeps) ../commit.c super.c ../super.c
 xattrdeps	= $(ballocdeps) $(dirdeps) $(ileafdeps) xattr.c ../xattr.c
 
