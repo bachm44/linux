@@ -11,10 +11,10 @@
 
 #include "../xattr.c"
 #include "../dleaf.c"
-#include "../ileaf.c"
-#include "../balloc.c"
 #include "../btree.c"
 #include "../iattr.c"
+#include "../ileaf.c"
+#include "../balloc.c"
 #include "../filemap.c"
 
 /*

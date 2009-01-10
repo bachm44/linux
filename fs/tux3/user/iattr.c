@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <errno.h>
+#include "tux3.h"
 #include "hexdump.c"
 
 #ifndef iattr_notmain_from_inode
@@ -28,7 +29,6 @@ static void init_btree(struct btree *btree, struct sb *sb, struct root root, str
 #define trace trace_off
 #endif
 
-#include "tux3.h"	/* include user/tux3.h, not fs/tux3/tux3.h */
 #include "../iattr.c"
 
 #ifndef iattr_included_from_ileaf
