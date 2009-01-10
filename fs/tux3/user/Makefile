@@ -41,7 +41,7 @@ superdeps	= $(inodedeps) ../commit.c super.c ../super.c
 xattrdeps	= $(ballocdeps) $(dirdeps) $(ileafdeps) xattr.c ../xattr.c
 
 all: $(binaries)
-tests: buffertest balloctest dleaftest ileaftest btreetest dirtest iattrtest xattrtest filemaptest inodetest
+tests: buffertest balloctest committest dleaftest ileaftest btreetest dirtest iattrtest xattrtest filemaptest inodetest
 
 balloc.o: $(basedeps) $(ballocdeps)
 btree.o: $(basedeps) $(btreedeps)
