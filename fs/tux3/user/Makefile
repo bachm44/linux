@@ -32,17 +32,20 @@ bufferdeps	= buffer.c buffer.h diskio.h err.h list.h
 vfsdeps		= $(bufferdeps) $(diskiodeps) vfs.c
 basedeps	= $(tuxdeps) err.h list.h buffer.h diskio.h tux3.h \
 	../tux3.h hexdump.c
-ballocdeps	= balloc.c ../balloc.c
-btreedeps	= btree.c ../btree.c
+ballocdeps	= ../balloc.c
+btreedeps	= balloc-dummy.c ../btree.c
+commitdeps	= $(inodedeps) ../log.c
 dirdeps		= dir.c ../dir.c
-dleafdeps	= dleaf.c ../dleaf.c
-filemapdeps	= $(btreedeps) $(ballocdeps) $(dleafdeps) $(dirdeps) \
-	$(xattrdeps) $(ileafdeps) filemap.c ../filemap.c
-iattrdeps	= iattr.c ../iattr.c
-ileafdeps	= $(iattrdeps) ileaf.c ../ileaf.c
+dleafdeps	= balloc-dummy.c ../dleaf.c
+filemapdeps	= $(dirdeps) ../xattr.c ../dleaf.c ../btree.c \
+	../iattr.c ../ileaf.c ../balloc.c filemap.c ../filemap.c
+iattrdeps	= btree-dummy.c ../iattr.c
+xattrcommondeps	= $(dirdeps) btree-dummy.c ../iattr.c \
+	../xattr.c ../ileaf.c
+ileafdeps	= balloc-dummy.c $(xattrcommondeps)
 inodedeps	= $(filemapdeps) inode.c ../inode.c super.c
 superdeps	= $(inodedeps) ../commit.c super.c ../super.c
-xattrdeps	= $(ballocdeps) $(dirdeps) $(ileafdeps) xattr.c ../xattr.c
+xattrdeps	= ../balloc.c $(xattrcommondeps)
 
 all: $(binaries)
 tests: buffertest balloctest committest dleaftest ileaftest btreetest dirtest iattrtest xattrtest filemaptest inodetest
@@ -54,7 +57,7 @@ vfs.o: $(tuxdeps) $(vfsdeps)
 # standalone
 balloc.o: $(basedeps) $(ballocdeps)
 btree.o: $(basedeps) $(btreedeps)
-commit.o: $(basedeps) $(inodedeps)
+commit.o: $(basedeps) $(commitdeps)
 dir.o: $(basedeps) $(dirdeps)
 dleaf.o: $(basedeps) $(dleafdeps)
 filemap.o: $(basedeps) $(filemapdeps)
