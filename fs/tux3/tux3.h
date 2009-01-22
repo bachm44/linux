@@ -124,7 +124,23 @@ static inline void *decode48(void *at, u64 *val)
 	return at;
 }
 
+/* Single linked list support */
+
+struct link { struct link *next; };
+
+static inline void link_add(struct link *node, struct link *list)
+{
+	node->next = list->next;
+	list->next = node;
+}
+
+static inline void link_del_next(struct link *list)
+{
+	list->next = list->next->next;
+}
+
 /* Tux3 disk format */
+
 #define SB_MAGIC_SIZE 8
 #define SB_MAGIC { 't', 'u', 'x', '3', 0xdd, 0x08, 0x12, 0x12 } /* date of latest incompatible sb format */
 /*
@@ -215,6 +231,8 @@ struct cursor {
 
 /* Tux3-specific sb is a handle for the entire volume state */
 
+typedef struct { unsigned count:8, block:24; } extent_t;
+
 struct sb {
 	struct disksuper super;
 	struct btree itable;	/* Cached root of the inode table */
@@ -235,10 +253,14 @@ struct sb {
 	loff_t dictsize;	/* Atom dictionary size */
 	struct inode *volmap;	/* Volume metadata cache */
 	struct inode *logmap;	/* Prototype log block cache */
+	unsigned logbase;	/* Index of oldest log block in log map */
 	unsigned lognext;	/* Index of next log block in log map */
 	struct buffer_head *logbuf; /* Cached log block */
 	unsigned char *logpos, *logtop; /* Where to emit next log entry */
 	struct mutex loglock; /* serialize log entries (spinlock me) */
+	struct link *defree;
+	extent_t *defreepos;
+	extent_t *defreetop;
 #ifdef __KERNEL__
 	struct super_block *vfs_sb; /* Generic kernel superblock */
 #else
@@ -625,7 +647,6 @@ struct buffer_head *cursor_leafbuf(struct cursor *cursor);
 void release_cursor(struct cursor *cursor);
 struct cursor *alloc_cursor(struct btree *btree, int);
 void free_cursor(struct cursor *cursor);
-void level_pop_brelse_dirty(struct cursor *cursor);
 void level_push(struct cursor *cursor, struct buffer_head *buffer, struct index_entry *next);
 
 void init_btree(struct btree *btree, struct sb *sb, struct root root, struct btree_ops *ops);
