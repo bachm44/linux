@@ -21,8 +21,8 @@
 #include "../xattr.c"
 #include "../ileaf.c"
 
-void change_begin(struct sb *sb) { };
-void change_end(struct sb *sb) { };
+void change_begin(struct sb *sb) { }
+void change_end(struct sb *sb) { }
 
 int main(int argc, char *argv[])
 {
