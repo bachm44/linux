@@ -124,15 +124,15 @@ static inline void *decode48(void *at, u64 *val)
 	return at;
 }
 
-/* Single linked list support */
+/* Single linked list support (LIFO order) */
 
 struct link { struct link *next; };
 
-#define LINK_HEAD_INIT(name)	{ &(name), }
+#define LINK_INIT_CIRCULAR(name)	{ &(name), }
 #define link_entry(ptr, type, member) \
 	container_of((typeof(((type *)0)->member) *)ptr, type, member)
 
-static inline void init_circular(struct link *head)
+static inline void init_link_circular(struct link *head)
 {
 	head->next = head;
 }
@@ -151,6 +151,58 @@ static inline void link_add(struct link *node, struct link *head)
 static inline void link_del_next(struct link *node)
 {
 	node->next = node->next->next;
+}
+
+/* Single linked list support (FIFO order) */
+
+struct flink_head { struct link *tail; };
+
+#define FLINK_HEAD_INIT(name)	{ NULL, }
+#define flink_next_entry(head, type, member) \
+	link_entry(flink_next(head), type, member)
+
+static inline void init_flink_head(struct flink_head *head)
+{
+	head->tail = NULL;
+}
+
+static inline int flink_empty(const struct flink_head *head)
+{
+	return head->tail == NULL;
+}
+
+static inline int flink_is_last(const struct flink_head *head)
+{
+	return link_empty(head->tail);
+}
+
+static inline struct link *flink_next(const struct flink_head *head)
+{
+	return head->tail->next;
+}
+
+static inline void flink_first_add(struct link *node, struct flink_head *head)
+{
+	assert(flink_empty(head));
+	init_link_circular(node);
+	head->tail = node;
+}
+
+static inline void flink_add(struct link *node, struct flink_head *head)
+{
+	link_add(node, head->tail);
+	head->tail = node;
+}
+
+static inline void flink_del_next(struct flink_head *head)
+{
+	link_del_next(head->tail);
+}
+
+static inline void flink_last_del(struct flink_head *head)
+{
+	assert(flink_is_last(head));
+	init_flink_head(head);
 }
 
 /* Tux3 disk format */
@@ -243,7 +295,7 @@ struct cursor {
 	} path[];
 };
 
-struct stash { struct link *tail; u64 *pos, *top; };
+struct stash { struct flink_head head; u64 *pos, *top; };
 
 /* Tux3-specific sb is a handle for the entire volume state */
 
@@ -650,6 +702,11 @@ static inline void mark_btree_dirty(struct btree *btree)
 		mark_inode_dirty(btree_inode(btree));
 }
 
+static inline struct inode *buffer_inode(struct buffer_head *buffer)
+{
+	return buffer->b_page->mapping->host;
+}
+
 static inline void *bufdata(struct buffer_head *buffer)
 {
 	return buffer->b_data;
@@ -662,17 +719,20 @@ static inline size_t bufsize(struct buffer_head *buffer)
 
 static inline block_t bufindex(struct buffer_head *buffer)
 {
-	return buffer->b_blocknr;
+	/*
+	 * We don't guarantee the buffer is buffer_mapped(), so we
+	 * calc it from page->index.
+	 */
+	struct inode *inode = buffer_inode(buffer);
+	struct page *page = buffer->b_page;
+	unsigned offset = (void *)buffer->b_data - page_address(page);
+	assert(inode == tux_sb(inode->i_sb)->volmap);
+	return (page_offset(page) + offset) >> inode->i_blkbits;
 }
 
 static inline int bufcount(struct buffer_head *buffer)
 {
 	return atomic_read(&buffer->b_count);
-}
-
-static inline struct inode *buffer_inode(struct buffer_head *buffer)
-{
-	return buffer->b_page->mapping->host;
 }
 
 /* btree.c */
@@ -810,4 +870,13 @@ static inline void change_end(struct sb *sb) { }
 
 #endif /* __KERNEL__ */
 
+static inline struct buffer_head *vol_getblk(struct sb *sb, block_t block)
+{
+	return blockget(mapping(sb->volmap), block);
+}
+
+static inline struct buffer_head *vol_bread(struct sb *sb, block_t block)
+{
+	return blockread(mapping(sb->volmap), block);
+}
 #endif
