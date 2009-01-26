@@ -34,37 +34,36 @@ static inline unsigned bcount(struct bnode *node)
 	return from_be_u32(node->count);
 }
 
-// desperately need ERR_PTR return here to distinguish between
-// ENOMEM, which should be impossible but when it happens we
-// need to do something reasonable, or ENOSPC which we must
-// just report and keep going without a fuss.
 static struct buffer_head *new_block(struct btree *btree)
 {
 	block_t block;
 	int err = btree->ops->balloc(btree->sb, 1, &block);
 	if (err)
-		return NULL; // ERR_PTR me!!!
+		return ERR_PTR(err);
 	struct buffer_head *buffer = vol_getblk(btree->sb, block);
 	if (!buffer)
-		return NULL;
-	memset(bufdata(buffer), 0, bufsize(buffer));
+		return ERR_PTR(-ENOMEM); // ERR_PTR me!!! and bfree?
+#ifndef __KERNEL__
 	mark_buffer_dirty(buffer);
+#endif
 	return buffer;
 }
 
 struct buffer_head *new_leaf(struct btree *btree)
 {
 	struct buffer_head *buffer = new_block(btree);
-	if (buffer)
+	if (!IS_ERR(buffer)) {
+		memset(bufdata(buffer), 0, bufsize(buffer));
 		(btree->ops->leaf_init)(btree, bufdata(buffer));
+	}
 	return buffer;
 }
 
 static struct buffer_head *new_node(struct btree *btree)
 {
 	struct buffer_head *buffer = new_block(btree);
-	if (buffer)
-		((struct bnode *)bufdata(buffer))->count = 0;
+	if (!IS_ERR(buffer))
+		memset(bufdata(buffer), 0, bufsize(buffer));
 	return buffer;
 }
 
@@ -527,7 +526,7 @@ static void add_child(struct bnode *node, struct index_entry *p, block_t child, 
 static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_head *leafbuf, int keep)
 {
 	struct btree *btree = cursor->btree;
-	int depth = btree->root.depth;
+	int err, depth = btree->root.depth;
 	block_t childblock = bufindex(leafbuf);
 	if (keep)
 		brelse(leafbuf);
@@ -551,8 +550,10 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 
 		/* split a full index node */
 		struct buffer_head *newbuf = new_node(btree);
-		if (!newbuf)
+		if (IS_ERR(newbuf)) {
+			err = PTR_ERR(newbuf);
 			goto eek;
+		}
 		struct bnode *newnode = bufdata(newbuf);
 		unsigned half = bcount(parent) / 2;
 		u64 newkey = from_be_u64(parent->entries[half].key);
@@ -569,7 +570,8 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 			level_replace_brelse(cursor, depth, newbuf, newnext);
 			parentbuf = newbuf;
 			parent = newnode;
-		}
+		} else
+			mark_buffer_dirty(newbuf);
 		add_child(parent, at->next, childblock, childkey);
 		if (!keep)
 			at->next++;
@@ -580,8 +582,10 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 	}
 	trace("add tree level");
 	struct buffer_head *newbuf = new_node(btree);
-	if (!newbuf)
+	if (IS_ERR(newbuf)) {
+		err = PTR_ERR(newbuf);
 		goto eek;
+	}
 	struct bnode *newroot = bufdata(newbuf);
 	int left_node = bufindex(cursor->path[0].buffer) != childblock;
 	newroot->count = to_be_u32(2);
@@ -591,12 +595,13 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 	btree->root.block = bufindex(newbuf);
 	btree->root.depth++;
 	level_root_add(cursor, newbuf, newroot->entries + 1 + !left_node);
+	mark_buffer_dirty(newbuf);
 	mark_btree_dirty(btree);
 	cursor_check(cursor);
 	return 0;
 eek:
 	release_cursor(cursor);
-	return -ENOMEM;
+	return err;
 }
 
 /* Insert new leaf to next cursor position, then set cursor to new leaf */
@@ -609,14 +614,17 @@ int btree_leaf_split(struct btree *btree, struct cursor *cursor, tuxkey_t key)
 {
 	trace("split leaf");
 	struct buffer_head *newbuf = new_leaf(btree);
-	if (!newbuf) {
+	if (IS_ERR(newbuf)) {
 		/* the rule: release cursor at point of error */
 		release_cursor(cursor);
-		return -ENOMEM;
+		return PTR_ERR(newbuf);
 	}
 	struct buffer_head *leafbuf = cursor_leafbuf(cursor);
 	tuxkey_t newkey = (btree->ops->leaf_split)(btree, key, bufdata(leafbuf), bufdata(newbuf));
-	mark_buffer_dirty(leafbuf);
+	if (key >= newkey)
+		mark_buffer_dirty(leafbuf);
+	else
+		mark_buffer_dirty(newbuf);
 	return insert_leaf(cursor, newkey, newbuf, key < newkey);
 }
 
@@ -653,7 +661,7 @@ int new_btree(struct btree *btree, struct sb *sb, struct btree_ops *ops)
 
 	struct buffer_head *rootbuf = new_node(btree);
 	struct buffer_head *leafbuf = new_leaf(btree);
-	if (!rootbuf || !leafbuf)
+	if (IS_ERR(rootbuf) || IS_ERR(leafbuf))
 		goto eek;
 	trace("root at %Lx\n", (L)bufindex(rootbuf));
 	trace("leaf at %Lx\n", (L)bufindex(leafbuf));
@@ -661,15 +669,15 @@ int new_btree(struct btree *btree, struct sb *sb, struct btree_ops *ops)
 	rootnode->entries[0].block = to_be_u64(bufindex(leafbuf));
 	rootnode->count = to_be_u32(1);
 	btree->root = (struct root){ .block = bufindex(rootbuf), .depth = 1 };
-	brelse(rootbuf);
-	brelse(leafbuf);
+	brelse_dirty(rootbuf);
+	brelse_dirty(leafbuf);
 	return 0;
 eek:
-	if (rootbuf)
+	if (!IS_ERR(rootbuf))
 		brelse(rootbuf);
-	if (leafbuf)
+	if (!IS_ERR(leafbuf))
 		brelse(leafbuf);
-	return -ENOMEM;
+	return IS_ERR(rootbuf) ? : IS_ERR(leafbuf);
 }
 
 /* userland only */
