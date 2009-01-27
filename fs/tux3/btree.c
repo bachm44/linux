@@ -317,25 +317,33 @@ void show_tree(struct btree *btree)
 	show_tree_range(btree, 0, -1);
 }
 
+static void level_redirect_brelse(struct cursor *cursor, int level, struct buffer_head *clone)
+{
+	struct buffer_head *buffer = cursor->path[level].buffer;
+	unsigned offset = (void *)cursor->path[level].next - bufdata(buffer);
+	memcpy(bufdata(clone), bufdata(buffer), bufsize(clone));
+	level_replace_brelse(cursor, level, clone, bufdata(clone) + offset);
+}
+
 int cursor_redirect(struct cursor *cursor)
 {
+#ifndef ATOMIC
+	return 0;
+#endif
 	struct btree *btree = cursor->btree;
 	unsigned level = btree->root.depth;
 	struct sb *sb = btree->sb;
 	while (1) {
 		struct buffer_head *buffer = cursor->path[level].buffer;
-//		if (buffer_dirty(buffer))
-//			return 0;
+		if (buffer_dirty(buffer))
+			return 0;
 
 		struct buffer_head *clone = new_block(btree);
 		if (IS_ERR(clone))
 			return PTR_ERR(clone);
 		block_t oldblock = bufindex(buffer), newblock = bufindex(clone);
-		trace("redirect block %Lx to %Lx", oldblock, newblock);
-		memcpy(bufdata(clone), bufdata(buffer), bufsize(clone));
-		cursor->path[level].buffer = clone;
-		cursor->path[level].next += bufdata(clone) - bufdata(buffer);
-		brelse(buffer);
+		trace("redirect block %Lx to %Lx", (L)oldblock, (L)newblock);
+		level_redirect_brelse(cursor, level, clone);
 		log_redirect(sb, oldblock, newblock);
 		defer_free(&sb->defree, oldblock, 1);
 
@@ -677,8 +685,12 @@ int btree_leaf_split(struct btree *btree, struct cursor *cursor, tuxkey_t key)
 	return insert_leaf(cursor, newkey, newbuf, key < newkey);
 }
 
-void *tree_expand(struct btree *btree, tuxkey_t key, unsigned newsize, struct cursor *cursor)
+void *tree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize)
 {
+	struct btree *btree = cursor->btree;
+	int err = cursor_redirect(cursor);
+	if (err)
+		return NULL; // ERR_PTR me!!!
 	for (int i = 0; i < 2; i++) {
 		struct buffer_head *leafbuf = cursor_leafbuf(cursor);
 		void *space = (btree->ops->leaf_resize)(btree, key, bufdata(leafbuf), newsize);
