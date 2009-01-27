@@ -349,15 +349,10 @@ int cursor_redirect(struct cursor *cursor)
 
 		if (!level--) {
 			trace("redirect root");
-			if (btree != itable_btree(sb)) {
-				assert(oldblock == btree->root.block);
-				btree->root.block = newblock;
-				log_droot(sb, newblock, oldblock, tux_inode(btree_inode(btree))->inum);
-				return 0;
-			}
-
-			assert(oldblock == from_be_u64(sb->super.iroot));
-			log_iroot(sb, newblock, oldblock);
+			assert(oldblock == btree->root.block);
+			btree->root.block = newblock;
+			if (btree == itable_btree(sb))
+				log_iroot(sb, newblock, oldblock);
 			return 0;
 		}
 
@@ -448,11 +443,13 @@ int tree_chop(struct btree *btree, struct delete_info *info, millisecond_t deadl
 
 	/* leaf walk */
 	while (1) {
+		if ((ret = cursor_redirect(cursor)))
+			goto error_leaf_chop;
 		ret = (ops->leaf_chop)(btree, info->key, bufdata(leafbuf));
 		if (ret) {
-			mark_buffer_dirty(leafbuf);
 			if (ret < 0)
 				goto error_leaf_chop;
+			mark_buffer_dirty(leafbuf);
 		}
 
 		/* try to merge this leaf with prev */
