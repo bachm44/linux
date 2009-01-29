@@ -690,20 +690,21 @@ void *tree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize)
 	struct btree *btree = cursor->btree;
 	int err = cursor_redirect(cursor);
 	if (err)
-		return NULL; // ERR_PTR me!!!
+		goto error;
 	for (int i = 0; i < 2; i++) {
 		struct buffer_head *leafbuf = cursor_leafbuf(cursor);
 		void *space = (btree->ops->leaf_resize)(btree, key, bufdata(leafbuf), newsize);
 		if (space)
 			return space;
 		assert(!i);
-		int err = btree_leaf_split(cursor, key);
+		err = btree_leaf_split(cursor, key);
 		if (err) {
 			warn("insert_node failed (%d)", err);
 			break;
 		}
 	}
-	return NULL;
+error:
+	return ERR_PTR(err);
 }
 
 void init_btree(struct btree *btree, struct sb *sb, struct root root, struct btree_ops *ops)
