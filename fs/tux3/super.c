@@ -8,6 +8,8 @@
 #include <linux/statfs.h>
 #include "tux3.h"
 
+#define trace trace_on
+
 static struct kmem_cache *tux_inode_cachep;
 
 static void tux3_inode_init_once(void *mem)
@@ -57,38 +59,12 @@ static void tux3_destroy_inode(struct inode *inode)
 	kmem_cache_free(tux_inode_cachep, tux_inode(inode));
 }
 
-static int tux_load_sb(struct super_block *sb, struct root *iroot, int silent)
-{
-	struct buffer_head *bh;
-	int err;
-
-	BUG_ON(SB_LOC < sb->s_blocksize);
-	bh = sb_bread(sb, SB_LOC >> sb->s_blocksize_bits);
-	if (!bh) {
-		if (!silent)
-			printk(KERN_ERR "TUX3: unable to read superblock\n");
-		return -EIO;
-	}
-	err = unpack_sb(tux_sb(sb), bufdata(bh), iroot, silent);
-	/* FIXME: this is needed? */
-	memcpy(&tux_sb(sb)->super, bufdata(bh), sizeof(tux_sb(sb)->super));
-	brelse(bh);
-
-	return err;
-}
-
 static void tux3_write_super(struct super_block *sb)
 {
-	struct buffer_head *bh;
-
-	BUG_ON(SB_LOC < sb->s_blocksize);
-	bh = vol_bread(tux_sb(sb), SB_LOC >> sb->s_blocksize_bits);
-	if (!bh) {
-		printk(KERN_ERR "TUX3: unable to read superblock\n");
+	if (tux_save_sb(tux_sb(sb))) {
+		printk(KERN_ERR "TUX3: unable to write superblock\n");
 		return;
 	}
-	pack_sb(tux_sb(sb), bufdata(bh));
-	brelse_dirty(bh);
 	sb->s_dirt = 0;
 }
 
@@ -146,7 +122,6 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 {
 	static struct tux_iattr iattr;
 	struct sb *sbi;
-	struct root iroot;
 	int err, blocksize;
 
 	sbi = kzalloc(sizeof(struct sb), GFP_KERNEL);
@@ -170,17 +145,16 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 		goto error;
 	}
 
-	err = tux_load_sb(sb, &iroot, silent);
-	if (err)
+	if ((err = tux_load_sb(tux_sb(sb)))) {
+		if (!silent) {
+			if (err == -EINVAL)
+				warn("invalid superblock [%Lx]",
+					(L)from_be_u64(*(be_u64 *)sbi->super.magic));
+			else
+				warn("Unable to read superblock");
+		}
 		goto error;
-	printk("%s: depth %Lu, block %Lu\n",
-	       __func__, (L)iroot.depth, (L)iroot.block);
-	printk("%s: blocksize %u, blockbits %u, blockmask %08x\n",
-	       __func__, sbi->blocksize, sbi->blockbits, sbi->blockmask);
-	printk("%s: volblocks %Lu, freeblocks %Lu, nextalloc %Lu\n",
-	       __func__, sbi->volblocks, sbi->freeblocks, sbi->nextalloc);
-	printk("%s: freeatom %u, atomgen %u\n",
-	       __func__, sbi->freeatom, sbi->atomgen);
+	}
 
 	if (sbi->blocksize != blocksize) {
 		if (!sb_set_blocksize(sb, sbi->blocksize)) {
@@ -195,9 +169,6 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sbi->volmap)
 		goto error;
 	insert_inode_hash(sbi->volmap);
-
-	/* Initialize itable btree */
-	init_btree(itable_btree(sbi), sbi, iroot, &itable_ops);
 
 //	struct inode *vtable;
 	sbi->bitmap = tux3_iget(sb, TUX_BITMAP_INO);

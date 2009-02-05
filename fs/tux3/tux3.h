@@ -8,6 +8,7 @@
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
+#include <linux/bio.h>
 #include <linux/mutex.h>
 
 typedef loff_t block_t;
@@ -220,6 +221,7 @@ static inline void flink_last_del(struct flink_head *head)
 #define MAX_FILESIZE (1LL << MAX_FILESIZE_BITS)
 #define MAX_EXTENT (1 << 6)
 #define SB_LOC (1 << 12)
+#define SB_LEN (1 << 12)
 
 /* Special inode numbers */
 #define TUX_BITMAP_INO		0
@@ -247,6 +249,7 @@ struct disksuper
 	be_u32 freeatom;	/* Beginning of persistent free atom list in atable */
 	be_u32 atomgen;		/* Next atom number if there are no free atoms */
 	be_u64 dictsize;	/* Size of the atom dictionary instead if i_size */
+	be_u64 logchain;	/* Most recent delta commit block pointer */
 };
 
 struct root {
@@ -297,6 +300,8 @@ struct stash { struct flink_head head; u64 *pos, *top; };
 
 struct sb {
 	struct disksuper super;
+	char pad[SB_LEN - sizeof(struct disksuper)];
+	struct btree itable;	/* Inode table btree */
 	struct inode *volmap;	/* Volume metadata cache (like blockdev).
 				 * Note, ->btree is the btree for itable. */
 	struct inode *bitmap;	/* allocation bitmap special file */
@@ -398,6 +403,11 @@ static inline void free(void *ptr)
 {
 	kfree(ptr);
 }
+
+static inline struct block_device *sb_dev(struct sb *sb)
+{
+	return sb->vfs_sb->s_bdev;
+}
 #else
 typedef struct inode {
 	struct btree btree;
@@ -445,11 +455,16 @@ static inline map_t *mapping(struct inode *inode)
 {
 	return inode->map;
 }
+
+static inline struct dev *sb_dev(struct sb *sb)
+{
+	return sb->dev;
+}
 #endif /* !__KERNEL__ */
 
 static inline struct btree *itable_btree(struct sb *sb)
 {
-	return &tux_inode(sb->volmap)->btree;
+	return &sb->itable;
 }
 
 #define TUX_LINK_MAX 64		/* just for debug for now */
@@ -850,8 +865,14 @@ int retire_frees(struct sb *sb, struct stash *defree);
 void destroy_defree(struct stash *defree);
 
 /* commit.c */
-int unpack_sb(struct sb *sb, struct disksuper *super, struct root *iroot, int silent);
+int vecio(int rw, struct block_device *dev, sector_t sector,
+	bio_end_io_t endio, void *data, unsigned vecs, struct bio_vec *vec);
+int syncio(int rw, struct block_device *dev, sector_t sector, unsigned vecs, struct bio_vec *vec);
+int devio(int rw, struct block_device *dev, loff_t offset, void *data, unsigned len);
+int unpack_sb(struct sb *sb, struct disksuper *super, struct root *iroot);
 void pack_sb(struct sb *sb, struct disksuper *super);
+int tux_load_sb(struct sb *sb);
+int tux_save_sb(struct sb *sb);
 
 /* temporary hack for buffer */
 struct buffer_head *blockread(struct address_space *mapping, block_t iblock);
@@ -873,7 +894,7 @@ static inline void brelse_dirty(struct buffer_head *buffer)
 	brelse(buffer);
 }
 
-static inline int blockdirty(struct buffer_head *buffer, unsigned newdelta)
+static inline int blockdirty(struct buffer_head *buffer, unsigned newdelta, struct list_head *forked)
 {
 	mark_buffer_dirty(buffer);
 	return 0;
