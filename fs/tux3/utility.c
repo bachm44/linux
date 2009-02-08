@@ -3,8 +3,8 @@
 #include <linux/kernel.h>
 #include <linux/bio.h>
 
-int vecio(int rw, struct block_device *dev, loff_t offset,
-	bio_end_io_t endio, void *data, unsigned vecs, struct bio_vec *vec)
+int vecio(int rw, struct block_device *dev, loff_t offset, unsigned vecs, struct bio_vec *vec,
+	bio_end_io_t endio, void *info)
 {
 	BUG_ON(vecs > bio_get_nr_vecs(dev));
 	struct bio *bio = bio_alloc(GFP_NOIO, vecs);
@@ -13,7 +13,7 @@ int vecio(int rw, struct block_device *dev, loff_t offset,
 	bio->bi_bdev = dev;
 	bio->bi_sector = offset >> 9;
 	bio->bi_end_io = endio;
-	bio->bi_private = data;
+	bio->bi_private = info;
 	bio->bi_vcnt = vecs;
 	memcpy(bio->bi_io_vec, vec, sizeof(*vec) * vecs);
 	while (vecs--)
@@ -22,21 +22,21 @@ int vecio(int rw, struct block_device *dev, loff_t offset,
 	return 0;
 }
 
-struct biosync { struct completion completion; int err; };
+struct biosync { struct completion done; int err; };
 
 static void biosync_endio(struct bio *bio, int err)
 {
 	struct biosync *sync = bio->bi_private;
 	bio_put(bio);
 	sync->err = err;
-	complete(&sync->completion);
+	complete(&sync->done);
 }
 
 int syncio(int rw, struct block_device *dev, loff_t offset, unsigned vecs, struct bio_vec *vec)
 {
-	struct biosync sync = { .completion = COMPLETION_INITIALIZER_ONSTACK(sync.completion) };
-	if (!(sync.err = vecio(rw, dev, offset, biosync_endio, &sync, vecs, vec)))
-		wait_for_completion(&sync.completion);
+	struct biosync sync = { .done = COMPLETION_INITIALIZER_ONSTACK(sync.done) };
+	if (!(sync.err = vecio(rw, dev, offset, vecs, vec, biosync_endio, &sync)))
+		wait_for_completion(&sync.done);
 	return sync.err;
 }
 
