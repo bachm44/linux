@@ -334,7 +334,7 @@ struct sb {
 	struct stash deflush;	/* defer extent frees until affer log flush */
 	struct list_head pinned; /* dirty metadata not flushed per delta */
 	struct list_head commit; /* dirty metadata flushed per delta */
-	struct list_head dirty_inodes; /* dirty inodes list */
+	struct list_head dirty_inodes;	/* dirty inodes list */
 #ifdef __KERNEL__
 	struct super_block *vfs_sb; /* Generic kernel superblock */
 #else
@@ -364,7 +364,7 @@ typedef struct {
 	inum_t inum;		/* Inode number.  Fixme: also in generic inode */
 	unsigned present;	/* Attributes decoded from or to be encoded to inode table */
 	struct xcache *xcache;	/* Extended attribute cache */
-	struct list_head dirty; /* link for dirty inodes */
+	struct list_head list;	/* link for dirty inodes */
 	struct inode vfs_inode;	/* Generic kernel inode */
 } tuxnode_t;
 
@@ -416,7 +416,7 @@ typedef struct inode {
 	inum_t inum;
 	unsigned present;
 	struct xcache *xcache;
-	struct list_head dirty;
+	struct list_head list;
 	struct sb *i_sb;
 	map_t *map;
 	loff_t i_size;
@@ -469,7 +469,7 @@ static inline struct btree *itable_btree(struct sb *sb)
 	return &sb->itable;
 }
 
-#define TUX_LINK_MAX 64		/* just for debug for now */
+#define TUX_LINK_MAX (1 << 15) /* arbitrary limit, increase it */
 
 #define TUX_NAME_LEN 255
 
@@ -762,6 +762,7 @@ static inline int buffer_clean(struct buffer_head *buffer)
 }
 
 /* btree.c */
+unsigned calc_entries_per_node(unsigned blocksize);
 struct buffer_head *cursor_leafbuf(struct cursor *cursor);
 void release_cursor(struct cursor *cursor);
 struct cursor *alloc_cursor(struct btree *btree, int);
@@ -894,10 +895,10 @@ static inline void brelse_dirty(struct buffer_head *buffer)
 	brelse(buffer);
 }
 
-static inline int blockdirty(struct buffer_head *buffer, unsigned newdelta, struct list_head *forked)
+static inline struct buffer_head *blockdirty(struct buffer_head *buffer, unsigned newdelta)
 {
 	mark_buffer_dirty(buffer);
-	return 0;
+	return buffer;
 }
 
 static inline void change_begin(struct sb *sb) { }
