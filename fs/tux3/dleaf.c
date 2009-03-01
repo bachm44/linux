@@ -105,6 +105,9 @@ static inline tuxkey_t get_index(struct group *group, struct entry *entry)
 
 void dleaf_dump(struct btree *btree, vleaf *vleaf)
 {
+	if (!tux3_trace)
+		return;
+
 	unsigned blocksize = btree->sb->blocksize;
 	struct dleaf *leaf = vleaf;
 	struct group *gdict = (void *)leaf + blocksize, *gbase = --gdict - dleaf_groups(leaf);
@@ -300,9 +303,17 @@ void dleaf_merge(struct btree *btree, vleaf *vinto, vleaf *vfrom)
 	unsigned merge_gcount = 0, rest_gcount = 0;
 	int can_merge_group = 0;
 
-	assert(dleaf_groups(leaf) >= 1);
+	/* Source is empty, so we do nothing */
 	if (dleaf_groups(from) == 0)
 		return;
+
+	/* Destination is empty, so we just copy */
+	if (dleaf_groups(leaf) == 0) {
+		unsigned used = from_be_u16(from->used);
+		memcpy(leaf, from, from_be_u16(from->free));
+		memcpy((void *)leaf + used, (void *)from + used, btree->sb->blocksize - used);
+		return;
+	}
 
 	/* Try to merge group, and prepare to adjust */
 	if (group_keyhi(gstop) == group_keyhi(group2) &&

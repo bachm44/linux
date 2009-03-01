@@ -20,34 +20,34 @@ static int check_present(struct inode *inode)
 	switch (inode->i_mode & S_IFMT) {
 	default:
 		assert(tuxnode->present & MODE_OWNER_BIT);
-		/* FIXME: assert(!(tuxnode->present & RDEV_BIT)) */
+		assert(!(tuxnode->present & RDEV_BIT));
 		break;
 	case S_IFBLK:
 	case S_IFCHR:
 		assert(tuxnode->present & MODE_OWNER_BIT);
-		/* FIXME: assert(tuxnode->present & RDEV_BIT) */
+//		assert(tuxnode->present & RDEV_BIT);
 		break;
 	case S_IFREG:
 		assert(tuxnode->present & MODE_OWNER_BIT);
 		assert(tuxnode->present & DATA_BTREE_BIT);
-		/* FIXME: assert(!(tuxnode->present & RDEV_BIT)) */
+		assert(!(tuxnode->present & RDEV_BIT));
 		break;
 	case S_IFDIR:
 		assert(tuxnode->present & MODE_OWNER_BIT);
 		assert(tuxnode->present & DATA_BTREE_BIT);
-		/* FIXME: assert(!(tuxnode->present & RDEV_BIT)) */
+		assert(!(tuxnode->present & RDEV_BIT));
 		break;
 	case S_IFLNK:
 		assert(tuxnode->present & MODE_OWNER_BIT);
 		assert(tuxnode->present & DATA_BTREE_BIT);
-		/* FIXME: assert(!(tuxnode->present & RDEV_BIT)) */
+		assert(!(tuxnode->present & RDEV_BIT));
 		break;
 	case 0:
 		if (tux_inode(inode)->inum == TUX_VOLMAP_INO)
 			assert(tuxnode->present == 0);
 		else {
 			assert(tuxnode->present & DATA_BTREE_BIT);
-			/* FIXME: assert(!(tuxnode->present & RDEV_BIT)) */
+			assert(!(tuxnode->present & RDEV_BIT));
 		}
 		break;
 	}
@@ -62,7 +62,7 @@ static inline void tux_set_inum(struct inode *inode, inum_t inum)
 	tux_inode(inode)->inum = inum;
 }
 
-static void tux_setup_inode(struct inode *inode, dev_t rdev);
+static void tux_setup_inode(struct inode *inode);
 
 struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr,
 			    dev_t rdev)
@@ -84,7 +84,10 @@ struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr,
 		inode->i_nlink++;
 	tux_set_inum(inode, TUX_INVALID_INO);
 	tux_inode(inode)->present = CTIME_SIZE_BIT|MTIME_BIT|MODE_OWNER_BIT|DATA_BTREE_BIT|LINK_COUNT_BIT;
-	tux_setup_inode(inode, rdev);
+	/* FIXME: should present always if chrdev/blkdev? */
+	if (rdev)
+		tux_inode(inode)->present |= RDEV_BIT;
+	tux_setup_inode(inode);
 	return inode;
 }
 
@@ -96,7 +99,7 @@ struct inode *tux_new_volmap(struct sb *sb)
 
 	inode->i_size = (loff_t)sb->volblocks << sb->blockbits;
 	tux_set_inum(inode, TUX_VOLMAP_INO);
-	tux_setup_inode(inode, 0);
+	tux_setup_inode(inode);
 	return inode;
 }
 
@@ -125,11 +128,12 @@ static int open_inode(struct inode *inode)
 	if (xsize && !(tux_inode(inode)->xcache = new_xcache(xsize)))
 		goto release;
 	decode_attrs(inode, attrs, size); // error???
-	dump_attrs(inode);
+	if (tux3_trace)
+		dump_attrs(inode);
 	if (tux_inode(inode)->xcache)
 		xcache_dump(inode);
 	check_present(inode);
-	tux_setup_inode(inode, inode->i_rdev);
+	tux_setup_inode(inode);
 	err = 0;
 release:
 	release_cursor(cursor);
@@ -186,15 +190,14 @@ static int make_inode(struct inode *inode, inum_t goal)
 	down_write(&cursor->btree->lock);
 	if ((err = probe(cursor, goal)))
 		goto out;
-	struct buffer_head *leafbuf = cursor_leafbuf(cursor);
 
 	/* FIXME: inum allocation should check min and max */
 	trace("create inode 0x%Lx", (L)goal);
 	assert(!tux_inode(inode)->btree.root.depth);
 	assert(goal < next_key(cursor, depth));
 	while (1) {
-		trace_off("find empty inode in [%Lx] base %Lx", (L)bufindex(leafbuf), (L)ibase(leaf));
-		goal = find_empty_inode(itable, bufdata(leafbuf), goal);
+		trace_off("find empty inode in [%Lx] base %Lx", (L)bufindex(cursor_leafbuf(cursor)), (L)ibase(leaf));
+		goal = find_empty_inode(itable, bufdata(cursor_leafbuf(cursor)), goal);
 		trace("result inum is %Lx, limit is %Lx", (L)goal, (L)next_key(cursor, depth));
 		if (goal < next_key(cursor, depth))
 			break;
@@ -260,18 +263,19 @@ static int purge_inum(struct sb *sb, inum_t inum)
 	if (!cursor)
 		return -ENOMEM;
 
-	int err = -ENOENT;
+	int err;
+	down_write(&cursor->btree->lock);
 	if (!(err = probe(cursor, inum))) {
-		if ((err = cursor_redirect(cursor)))
-			return err;
-		/* FIXME: truncate the bnode and leaf if empty. */
-		struct buffer_head *ileafbuf = cursor_leafbuf(cursor);
-		struct ileaf *ileaf = to_ileaf(bufdata(ileafbuf));
-		err = ileaf_purge(itable, inum, ileaf);
-		if (!err)
-			mark_buffer_dirty(ileafbuf);
+		if (!(err = cursor_redirect(cursor))) {
+			/* FIXME: truncate the bnode and leaf if empty. */
+			struct ileaf *ileaf = to_ileaf(bufdata(cursor_leafbuf(cursor)));
+			err = ileaf_purge(itable, inum, ileaf);
+			assert(!err);
+			mark_buffer_dirty(cursor_leafbuf(cursor));
+		}
 		release_cursor(cursor);
 	}
+	up_write(&cursor->btree->lock);
 	free_cursor(cursor);
 	return err;
 }
@@ -428,7 +432,7 @@ const struct inode_operations tux_symlink_iops = {
 #endif
 };
 
-static void tux_setup_inode(struct inode *inode, dev_t rdev)
+static void tux_setup_inode(struct inode *inode)
 {
 	struct sb *sbi = tux_sb(inode->i_sb);
 
@@ -440,7 +444,7 @@ static void tux_setup_inode(struct inode *inode, dev_t rdev)
 	switch (inode->i_mode & S_IFMT) {
 	default:
 		inode->i_op = &tux_special_iops;
-		init_special_inode(inode, inode->i_mode, rdev);
+		init_special_inode(inode, inode->i_mode, inode->i_rdev);
 		break;
 	case S_IFREG:
 		inode->i_op = &tux_file_iops;
