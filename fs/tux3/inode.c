@@ -146,6 +146,7 @@ out:
 static int store_attrs(struct inode *inode, struct cursor *cursor)
 {
 	unsigned size = encode_asize(tux_inode(inode)->present) + encode_xsize(inode);
+	assert(size);
 	void *base = tree_expand(cursor, tux_inode(inode)->inum, size);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
@@ -331,6 +332,7 @@ void tux3_delete_inode(struct inode *inode)
 	if (inode->i_blocks)
 		tux3_truncate(inode);
 	/* FIXME: we have to free dtree-root, atable entry, etc too */
+	free_btree(&tux_inode(inode)->btree);
 
 	/* clear_inode() before freeing this ino. */
 	clear_inode(inode);

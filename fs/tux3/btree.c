@@ -732,9 +732,12 @@ int new_btree(struct btree *btree, struct sb *sb, struct btree_ops *ops)
 	init_btree(btree, sb, (struct root){}, ops);
 
 	struct buffer_head *rootbuf = new_node(btree);
+	if (IS_ERR(rootbuf))
+		goto error;
 	struct buffer_head *leafbuf = new_leaf(btree);
-	if (IS_ERR(rootbuf) || IS_ERR(leafbuf))
-		goto eek;
+	if (IS_ERR(leafbuf))
+		goto error_leafbuf;
+
 	trace("root at %Lx", (L)bufindex(rootbuf));
 	trace("leaf at %Lx", (L)bufindex(leafbuf));
 	struct bnode *rootnode = bufdata(rootbuf);
@@ -744,16 +747,28 @@ int new_btree(struct btree *btree, struct sb *sb, struct btree_ops *ops)
 	brelse_dirty(rootbuf);
 	brelse_dirty(leafbuf);
 	return 0;
-eek:
-	if (!IS_ERR(rootbuf))
-		brelse(rootbuf);
-	if (!IS_ERR(leafbuf))
-		brelse(leafbuf);
-	return IS_ERR(rootbuf) ? : IS_ERR(leafbuf);
+
+error_leafbuf:
+	(ops->bfree)(sb, bufindex(rootbuf), 1);
+	brelse(rootbuf);
+	rootbuf = leafbuf;
+error:
+	return PTR_ERR(rootbuf);
 }
 
-/* userland only */
-void free_btree(struct btree *btree)
+/* FIXME: right? */
+int free_btree(struct btree *btree)
 {
-	// write me
+	assert(btree->root.depth == 1);
+	struct sb *sb = btree->sb;
+	struct buffer_head *rootbuf = vol_bread(sb, btree->root.block);
+	if (!rootbuf)
+		return -EIO;
+	struct bnode *rootnode = bufdata(rootbuf);
+	assert(bcount(rootnode) == 1);
+	/* FIXME: error check */
+	(btree->ops->bfree)(sb, from_be_u64(rootnode->entries[0].block), 1);
+	(btree->ops->bfree)(sb, bufindex(rootbuf), 1);
+	brelse(rootbuf);
+	return 0;
 }
