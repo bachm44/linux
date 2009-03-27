@@ -361,13 +361,22 @@ int bytebits(uint8_t c);
 
 /* logging  */
 
-struct logblock { be_u16 magic, bytes; be_u64 logchain; unsigned char data[]; };
+struct logblock {
+	be_u16 magic;		/* Magic number */
+	be_u16 bytes;		/* Total data bytes on this block */
+	u32 unused;		/* padding */
+	be_u64 logchain;	/* Block number to previous logblock */
+	unsigned char data[];	/* Log data */
+};
 
-enum {	LOG_ALLOC = 0x33,
-	LOG_FREE,
+enum {
+	LOG_BALLOC = 0x33,
+	LOG_BFREE,
+	LOG_BFREE_ON_FLUSH,
 	LOG_UPDATE,
 	LOG_REDIRECT,
-	LOG_TYPES };
+	LOG_TYPES
+};
 
 #ifdef __KERNEL__
 /*
@@ -898,6 +907,7 @@ void log_drop(struct sb *sb);
 void log_finish(struct sb *sb);
 void log_balloc(struct sb *sb, block_t block, unsigned count);
 void log_bfree(struct sb *sb, block_t block, unsigned count);
+void log_bfree_on_flush(struct sb *sb, block_t block, unsigned count);
 void log_update(struct sb *sb, block_t child, block_t parent, tuxkey_t key);
 void log_redirect(struct sb *sb, block_t newblock, block_t oldblock);
 void log_droot(struct sb *sb, block_t newroot, block_t oldroot, tuxkey_t key);
@@ -905,9 +915,8 @@ void log_iroot(struct sb *sb, block_t newroot, block_t oldroot);
 
 int stash_value(struct stash *stash, u64 value);
 int unstash(struct sb *sb, struct stash *defree, unstash_t actor);
-int defer_free(struct stash *defree, block_t block, unsigned count);
-int retire_frees(struct sb *sb, struct stash *defree);
-void destroy_defree(struct stash *defree);
+int defer_bfree(struct stash *defree, block_t block, unsigned count);
+void destroy_defer_bfree(struct stash *defree);
 
 /* utility.c */
 int vecio(int rw, struct block_device *dev, sector_t sector,

@@ -75,23 +75,25 @@ void log_drop(struct sb *sb)
 {
 	blockput(sb->logbuf);
 	sb->logbuf = NULL;
+	sb->logtop = sb->logpos = NULL;
 }
 
 void log_finish(struct sb *sb)
 {
-	struct logblock *log = bufdata(sb->logbuf);
-	assert(sb->logtop >= sb->logpos);
-	log->bytes = to_be_u16(sb->logpos - log->data);
-	memset(sb->logpos, 0, sb->logtop - sb->logpos);
-	log_drop(sb);
+	if (sb->logbuf) {
+		struct logblock *log = bufdata(sb->logbuf);
+		assert(sb->logtop >= sb->logpos);
+		log->bytes = to_be_u16(sb->logpos - log->data);
+		memset(sb->logpos, 0, sb->logtop - sb->logpos);
+		log_drop(sb);
+	}
 }
 
 void *log_begin(struct sb *sb, unsigned bytes)
 {
 	mutex_lock(&sb->loglock);
 	if (sb->logpos + bytes > sb->logtop) {
-		if (sb->logbuf)
-			log_finish(sb);
+		log_finish(sb);
 		log_next(sb);
 		*(struct logblock *)bufdata(sb->logbuf) = (struct logblock){
 			.magic = to_be_u16(TUX3_MAGIC_LOG) };
@@ -107,6 +109,7 @@ void log_end(struct sb *sb, void *pos)
 
 static void log_extent(struct sb *sb, u8 intent, block_t block, unsigned count)
 {
+	assert(count < 256);	/* FIXME: extent max is 64 for now */
 	unsigned char *data = log_begin(sb, 8);
 
 	*data++ = intent;
@@ -116,12 +119,17 @@ static void log_extent(struct sb *sb, u8 intent, block_t block, unsigned count)
 
 void log_balloc(struct sb *sb, block_t block, unsigned count)
 {
-	log_extent(sb, LOG_ALLOC, block, count);
+	log_extent(sb, LOG_BALLOC, block, count);
 }
 
 void log_bfree(struct sb *sb, block_t block, unsigned count)
 {
-	log_extent(sb, LOG_FREE, block, count);
+	log_extent(sb, LOG_BFREE, block, count);
+}
+
+void log_bfree_on_flush(struct sb *sb, block_t block, unsigned count)
+{
+	log_extent(sb, LOG_BFREE_ON_FLUSH, block, count);
 }
 
 void log_update(struct sb *sb, block_t child, block_t parent, tuxkey_t key)
@@ -179,7 +187,7 @@ int stash_value(struct stash *stash, u64 value)
 	return 0;
 }
 
-void empty_stash(struct stash *stash)
+static void empty_stash(struct stash *stash)
 {
 	struct flink_head *head = &stash->head;
 
@@ -222,14 +230,14 @@ int unstash(struct sb *sb, struct stash *stash, unstash_t actor)
 	return 0;
 }
 
-/* Deferred free list */
+/* Deferred free blocks list */
 
-int defer_free(struct stash *defree, block_t block, unsigned count)
+int defer_bfree(struct stash *defree, block_t block, unsigned count)
 {
 	return stash_value(defree, ((u64)count << 48) + block);
 }
 
-void destroy_defree(struct stash *defree)
+void destroy_defer_bfree(struct stash *defree)
 {
 	empty_stash(defree);
 }
