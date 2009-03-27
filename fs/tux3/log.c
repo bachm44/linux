@@ -71,14 +71,19 @@ void log_next(struct sb *sb)
 	sb->logtop = bufdata(sb->logbuf) + sb->blocksize;
 }
 
+void log_drop(struct sb *sb)
+{
+	blockput(sb->logbuf);
+	sb->logbuf = NULL;
+}
+
 void log_finish(struct sb *sb)
 {
 	struct logblock *log = bufdata(sb->logbuf);
 	assert(sb->logtop >= sb->logpos);
 	log->bytes = to_be_u16(sb->logpos - log->data);
 	memset(sb->logpos, 0, sb->logtop - sb->logpos);
-	blockput(sb->logbuf);
-	sb->logbuf = NULL;
+	log_drop(sb);
 }
 
 void *log_begin(struct sb *sb, unsigned bytes)
@@ -127,27 +132,6 @@ void log_update(struct sb *sb, block_t child, block_t parent, tuxkey_t key)
 	data = encode48(data, child);
 	data = encode48(data, parent);
 	log_end(sb, encode48(data, key));
-}
-
-void log_droot(struct sb *sb, block_t newroot, block_t oldroot, tuxkey_t key)
-{
-return;
-	unsigned char *data = log_begin(sb, 19);
-
-	*data++ = LOG_IROOT;
-	data = encode48(data, newroot);
-	data = encode48(data, oldroot);
-	log_end(sb, encode48(data, key));
-}
-
-void log_iroot(struct sb *sb, block_t newroot, block_t oldroot)
-{
-return;
-	unsigned char *data = log_begin(sb, 19);
-
-	*data++ = LOG_IROOT;
-	data = encode48(data, newroot);
-	log_end(sb, encode48(data, oldroot));
 }
 
 void log_redirect(struct sb *sb, block_t newblock, block_t oldblock)

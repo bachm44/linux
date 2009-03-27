@@ -358,8 +358,12 @@ int bytebits(uint8_t c);
 /* logging  */
 
 struct logblock { be_u16 magic, bytes; be_u64 logchain; unsigned char data[]; };
-enum { LOG_ALLOC = 0x33, LOG_FREE, LOG_UPDATE, LOG_DROOT, LOG_IROOT, LOG_REDIRECT };
-struct commit_entry { be_u64 previous; };
+
+enum {	LOG_ALLOC = 0x33,
+	LOG_FREE,
+	LOG_UPDATE,
+	LOG_REDIRECT,
+	LOG_TYPES };
 
 #ifdef __KERNEL__
 /*
@@ -374,7 +378,7 @@ struct commit_entry { be_u64 previous; };
 
 typedef struct {
 	struct btree btree;
-	inum_t inum;		/* Inode number.  Fixme: also in generic inode */
+	inum_t inum;		/* Inode number */
 	unsigned present;	/* Attributes decoded from or to be encoded to inode table */
 	struct xcache *xcache;	/* Extended attribute cache */
 	struct list_head list;	/* link for dirty inodes */
@@ -886,6 +890,7 @@ unsigned encode_xsize(struct inode *inode);
 
 /* log.c */
 void log_next(struct sb *sb);
+void log_drop(struct sb *sb);
 void log_finish(struct sb *sb);
 void log_balloc(struct sb *sb, block_t block, unsigned count);
 void log_bfree(struct sb *sb, block_t block, unsigned count);
