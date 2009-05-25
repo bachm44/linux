@@ -50,13 +50,13 @@ dirdeps		= dir.c ../dir.c
 dleafdeps	= balloc-dummy.c ../dleaf.c
 filemapdeps	= $(dirdeps) ../log.c ../xattr.c ../dleaf.c \
 	../btree.c ../iattr.c ../ileaf.c ../balloc.c \
-	filemap.c ../filemap.c
+	filemap.c ../filemap.c ../commit.c
 iattrdeps	= btree-dummy.c ../iattr.c
 xattrcommondeps	= $(dirdeps) btree-dummy.c ../iattr.c \
 	../xattr.c ../ileaf.c
 ileafdeps	= balloc-dummy.c $(xattrcommondeps)
 inodedeps	= $(filemapdeps) inode.c ../inode.c super.c
-superdeps	= $(inodedeps) ../commit.c super.c ../super.c
+superdeps	= $(inodedeps) super.c ../super.c
 xattrdeps	= ../balloc.c $(xattrcommondeps)
 
 all: $(binaries)
