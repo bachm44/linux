@@ -338,10 +338,14 @@ void show_tree(struct btree *btree)
 static void level_redirect_blockput(struct cursor *cursor, int level, struct buffer_head *clone)
 {
 	struct buffer_head *buffer = cursor->path[level].buffer;
-	unsigned offset = (void *)cursor->path[level].next - bufdata(buffer);
+	struct index_entry *next = cursor->path[level].next;
+
+	/* If this level has ->next, update ->next to the clone buffer */
+	if (next)
+		next = bufdata(clone) + ((void *)next - bufdata(buffer));
 
 	memcpy(bufdata(clone), bufdata(buffer), bufsize(clone));
-	level_replace_blockput(cursor, level, clone, bufdata(clone) + offset);
+	level_replace_blockput(cursor, level, clone, next);
 }
 
 int cursor_redirect(struct cursor *cursor)
@@ -376,10 +380,7 @@ int cursor_redirect(struct cursor *cursor)
 			trace("redirect root");
 			assert(oldblock == btree->root.block);
 			btree->root.block = newblock;
-			if (btree == itable_btree(sb))
-				/*mark_sb_dirty(sb)*/;
-			else
-				mark_inode_dirty(btree_inode(btree));
+			mark_btree_dirty(btree);
 			return 0;
 		}
 
@@ -645,7 +646,8 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 		parent->count = to_be_u32(half);
 
 		/* if the cursor is in the new node, use that as the parent */
-		if (at->next > parent->entries + half) {
+		int child_is_left = at->next <= parent->entries + half;
+		if (!child_is_left) {
 			struct index_entry *newnext;
 			mark_buffer_dirty(parentbuf);
 			newnext = newnode->entries + (at->next - &parent->entries[half]);
@@ -659,9 +661,17 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 		if (!keep)
 			at->next++;
 		mark_buffer_dirty(parentbuf);
+
 		childkey = newkey;
 		childblock = bufindex(newbuf);
 		blockput(newbuf);
+
+		/*
+		 * if child is in left bnode, we should keep the
+		 * cursor position to child, not splited new bnode.
+		 */
+		if (child_is_left)
+			keep = 1;
 	}
 	trace("add tree level");
 	struct buffer_head *newbuf = new_node(btree);
