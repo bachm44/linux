@@ -313,11 +313,14 @@ struct xcache *new_xcache(unsigned maxsize)
 
 static inline int remove_old(struct xcache *xcache, struct xattr *xattr)
 {
-	if (!xattr)
-		return 0;
-	unsigned size = (void *)xcache_next(xattr) - (void *)xattr;
-	memmove(xattr, xcache_next(xattr), xcache->size -= size);
-	return 1;
+	if (xattr) {
+		void *limit = xcache_limit(xcache);
+		void *next = xcache_next(xattr);
+		memmove(xattr, next, limit - next);
+		xcache->size -= next - (void *)xattr;
+		return 1;
+	}
+	return 0;
 }
 
 /*
@@ -389,6 +392,10 @@ int get_xattr(struct inode *inode, const char *name, unsigned len, void *data, u
 		goto out;
 	}
 	struct xattr *xattr = xcache_lookup(tux_inode(inode)->xcache, atom);
+	if (IS_ERR(xattr)) {
+		ret = PTR_ERR(xattr);
+		goto out;
+	}
 	ret = xattr->size;
 	if (ret <= size)
 		memcpy(data, xattr->body, ret);

@@ -232,9 +232,10 @@ static int make_inode(struct inode *inode, inum_t goal)
 	}
 
 	tux_set_inum(inode, goal);
+	/* FIXME: should use conditional inode->present. But,
+	 * btree->lock is needed to initialize. */
 	if (tux_inode(inode)->present & DATA_BTREE_BIT)
-		if ((err = new_btree(&tux_inode(inode)->btree, sb, &dtree_ops)))
-			goto release;
+		init_btree(&tux_inode(inode)->btree, sb, (struct root){}, &dtree_ops);
 	if ((err = store_attrs(inode, cursor)))
 		goto out;
 release:
@@ -247,21 +248,24 @@ out:
 
 static int save_inode(struct inode *inode)
 {
-	assert(tux_inode(inode)->inum != TUX_INVALID_INO);
-	trace("save inode 0x%Lx", (L)tux_inode(inode)->inum);
 	struct sb *sb = tux_sb(inode->i_sb);
 	struct btree *itable = itable_btree(sb);
+	inum_t inum = tux_inode(inode)->inum;
 	int err;
-	struct cursor *cursor = alloc_cursor(itable, 1); /* +1 for new depth */
 
+	assert(inum != TUX_INVALID_INO);
+	trace("save inode 0x%Lx", (L)inum);
+
+	struct cursor *cursor = alloc_cursor(itable, 1); /* +1 for new depth */
 	if (!cursor)
 		return -ENOMEM;
+
 	down_write(&cursor->btree->lock);
-	if ((err = probe(cursor, tux_inode(inode)->inum)))
+	if ((err = probe(cursor, inum)))
 		goto out;
 	/* paranoia check */
 	unsigned size;
-	if (!(ileaf_lookup(itable, tux_inode(inode)->inum, bufdata(cursor_leafbuf(cursor)), &size))) {
+	if (!(ileaf_lookup(itable, inum, bufdata(cursor_leafbuf(cursor)), &size))) {
 		err = -EINVAL;
 		goto release;
 	}
@@ -350,7 +354,7 @@ void tux3_delete_inode(struct inode *inode)
 	if (inode->i_blocks)
 		tux3_truncate(inode);
 	/* FIXME: we have to free dtree-root, atable entry, etc too */
-	free_btree(&tux_inode(inode)->btree);
+	free_empty_btree(&tux_inode(inode)->btree);
 
 	/* clear_inode() before freeing this ino. */
 	clear_inode(inode);
