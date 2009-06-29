@@ -18,6 +18,7 @@
 #include "buffer.h"
 #include "trace.h"
 #include "lockdebug.h"
+#include "utility.h"
 #include "../link.h"
 
 void stacktrace(void);
