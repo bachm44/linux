@@ -162,8 +162,7 @@ static inline void *decode48(void *at, u64 *val)
 #define TUX_ATABLE_INO		10
 #define TUX_ROOTDIR_INO		13
 
-struct disksuper
-{
+struct disksuper {
 	/* Update magic on any incompatible format change */
 	char magic[8];		/* Contains TUX3_LABEL magic string */
 	be_u64 birthdate;	/* Volume creation date */
@@ -180,6 +179,7 @@ struct disksuper
 	be_u64 dictsize;	/* Size of the atom dictionary instead if i_size */
 	be_u64 logchain;	/* Most recent delta commit block pointer */
 	be_u32 logcount;	/* Count of log blocks in the current log chain */
+	be_u32 next_logcount;	/* sb->logcount for the next flush cycle */
 } __packed;
 
 struct root {
@@ -252,16 +252,21 @@ struct sb {
 	unsigned freeatom;	/* Start of free atom list in atom table */
 	unsigned atomgen;	/* Next atom number to allocate if no free atoms */
 	loff_t dictsize;	/* Atom dictionary size */
+
 	struct inode *logmap;	/* Log block cache */
 	block_t logchain;	/* Previous log block physical address */
 	unsigned logbase;	/* Index of oldest log block in log map */
+	unsigned next_logbase;	/* ->logbase for the next cycle */
 	unsigned logthis;	/* Index of first log block in delta */
 	unsigned lognext;	/* Index of next log block in log map */
 	struct buffer_head *logbuf; /* Cached log block */
 	unsigned char *logpos, *logtop; /* Where to emit next log entry */
 	struct mutex loglock;	/* serialize log entries (spinlock me) */
-	struct stash defree;	/* defer extent frees until affer commit */
-	struct stash deflush;	/* defer extent frees until affer log flush */
+	struct stash defree;	/* defer extent frees until after commit */
+	struct stash deflush;	/* defer extent frees until after log flush */
+	struct stash decycle;	/* defer extent frees until this new cycle */
+	struct stash new_decycle;/* defer extent frees until next new cycle */
+
 	struct list_head pinned; /* dirty metadata not flushed per delta */
 	struct list_head commit; /* dirty metadata flushed per delta */
 
