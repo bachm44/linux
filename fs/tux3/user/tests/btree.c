@@ -16,8 +16,6 @@
 #endif
 
 #include "balloc-dummy.c"
-#include "../log.c"
-#include "../btree.c"
 
 struct uleaf { u32 magic, count; struct uentry { u16 key, val; } entries[]; };
 

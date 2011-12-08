@@ -14,7 +14,7 @@
 #define trace trace_off
 #endif
 
-#include "../../balloc.c"
+#include "../balloc.c"
 
 int main(int argc, char *argv[])
 {
