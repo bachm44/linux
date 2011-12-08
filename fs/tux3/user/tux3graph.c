@@ -10,8 +10,13 @@
  * $ viewer volname.dot.png
  */
 
-#include "inode.c"
+#include "tux3user.h"
 #include <getopt.h>
+
+/* tux3graph has to access internal structure */
+#include "../btree.c"
+#include "../dleaf.c"
+#include "../ileaf.c"
 
 static const char *dtree_names[] = {
 	[TUX_BITMAP_INO]	= "bitmap",
