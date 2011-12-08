@@ -820,15 +820,14 @@ void ileaf_purge(struct btree *btree, inum_t inum, struct ileaf *leaf);
 extern struct btree_ops itable_ops;
 
 /* inode.c */
-struct inode *tux_new_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev);
 struct inode *tux_new_volmap(struct sb *sb);
 void tux3_delete_inode(struct inode *inode);
 void tux3_clear_inode(struct inode *inode);
 int tux3_write_inode(struct inode *inode, int do_sync);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
+int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 struct inode *tux_create_inode(struct inode *dir, int mode, dev_t rdev);
 struct inode *tux3_iget(struct super_block *sb, inum_t inum);
-int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
 /* symlink.c */
 extern const struct inode_operations tux_symlink_iops;
