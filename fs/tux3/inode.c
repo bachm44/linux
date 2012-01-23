@@ -30,6 +30,7 @@ struct inode *tux_new_volmap(struct sb *sb)
 	if (inode) {
 		inode->i_size = (loff_t)sb->volblocks << sb->blockbits;
 		tux_set_inum(inode, TUX_VOLMAP_INO);
+		insert_inode_hash(inode);
 		tux_setup_inode(inode);
 	}
 	return inode;
@@ -176,7 +177,7 @@ retry:
 		int more = advance(cursor);
 		if (more < 0) {
 			err = more;
-			goto out;
+			goto release;
 		}
 		trace("no more inode space here, advance %i", more);
 		if (!more) {
@@ -359,8 +360,9 @@ static int save_inode(struct inode *inode)
 		assert(ileaf_lookup(itable, inum, bufdata(cursor_leafbuf(cursor)), &size));
 	}
 	if ((err = store_attrs(inode, cursor)))
-		goto out;
+		goto error_release;
 	del_defer_alloc_inum(inode);
+error_release:
 	release_cursor(cursor);
 out:
 	up_write(&cursor->btree->lock);
