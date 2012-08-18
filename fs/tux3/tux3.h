@@ -686,11 +686,6 @@ static inline struct xattr *xcache_limit(struct xcache *xcache)
 	return (void *)xcache + xcache->size;
 }
 
-static inline void *encode_kind(void *attrs, unsigned kind, unsigned version)
-{
-	return encode16(attrs, (kind << 12) | version);
-}
-
 struct ileaf;
 static inline struct ileaf *to_ileaf(vleaf *leaf)
 {
@@ -905,7 +900,9 @@ int dwalk_add(struct dwalk *walk, tuxkey_t index, struct diskextent extent);
 /* iattr.c */
 unsigned encode_asize(unsigned bits);
 void dump_attrs(struct inode *inode);
+void *encode_kind(void *attrs, unsigned kind, unsigned version);
 void *encode_attrs(struct inode *inode, void *attrs, unsigned size);
+void *decode_kind(void *attrs, unsigned *kind, unsigned *version);
 void *decode_attrs(struct inode *inode, void *attrs, unsigned size);
 
 /* ileaf.c */
@@ -918,6 +915,7 @@ extern struct btree_ops itable_ops;
 struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
 void del_defer_alloc_inum(struct inode *inode);
+int purge_inum(struct btree *btree, inum_t inum);
 
 /* log.c */
 extern unsigned log_size[];
