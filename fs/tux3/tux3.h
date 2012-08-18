@@ -682,8 +682,8 @@ static inline int has_root(struct btree *btree)
 		(btree->root.depth != no_root.depth);
 }
 
-/* for tree_chop */
-struct delete_info {
+/* for btree_chop */
+struct btree_chop_info {
 	tuxkey_t key;
 	block_t blocks, freed;
 	block_t resume;
@@ -819,18 +819,18 @@ struct buffer_head *cursor_leafbuf(struct cursor *cursor);
 void release_cursor(struct cursor *cursor);
 struct cursor *alloc_cursor(struct btree *btree, int);
 void free_cursor(struct cursor *cursor);
-void level_push(struct cursor *cursor, struct buffer_head *buffer, struct index_entry *next);
+void cursor_push(struct cursor *cursor, struct buffer_head *buffer, struct index_entry *next);
 
 void init_btree(struct btree *btree, struct sb *sb, struct root root, struct btree_ops *ops);
 int alloc_empty_btree(struct btree *btree);
 int free_empty_btree(struct btree *btree);
 struct buffer_head *new_leaf(struct btree *btree);
 int cursor_advance(struct cursor *cursor);
-int probe(struct cursor *cursor, tuxkey_t key);
+int btree_probe(struct cursor *cursor, tuxkey_t key);
 tuxkey_t next_key(struct cursor *cursor, int depth);
-int tree_chop(struct btree *btree, struct delete_info *info, millisecond_t deadline);
+int btree_chop(struct btree *btree, struct btree_chop_info *info, millisecond_t deadline);
 int btree_insert_leaf(struct cursor *cursor, tuxkey_t key, struct buffer_head *leafbuf);
-void *tree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize);
+void *btree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize);
 void show_tree_range(struct btree *btree, tuxkey_t start, unsigned count);
 void show_tree(struct btree *btree);
 int cursor_redirect(struct cursor *cursor);
