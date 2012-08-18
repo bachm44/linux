@@ -19,16 +19,6 @@
 
 #include "trace.h"
 #include "buffer.h"
-
-/*
- * Choose carefully:
- * loff_t can be "long" or "long long" in userland. (not printf friendly)
- * sector_t can be "unsigned long" or "u64". (not printf friendly, and
- * would be hard to control on 32bits arch)
- *
- * we want 48bits for tux3, and error friendly. (FIXME: what is best?)
- */
-typedef signed long long	block_t;
 #endif /* !__KERNEL__ */
 
 #include "link.h"
@@ -316,7 +306,10 @@ typedef struct {
 	struct list_head dirty_list; /* link for dirty inode list */
 	struct list_head alloc_list; /* link for deferred inum allocation */
 	struct list_head orphan_list; /* link for orphan inode list */
+
 	struct dirty_buffers dirty; /* list for dirty buffers */
+	int (*io)(int rw, struct bufvec *bufvec);
+
 	struct inode vfs_inode;	/* Generic kernel inode */
 } tuxnode_t;
 
@@ -624,16 +617,6 @@ static inline struct inode *buffer_inode(struct buffer_head *buffer)
 	return buffer->b_page->mapping->host;
 }
 
-static inline void *bufdata(struct buffer_head *buffer)
-{
-	return buffer->b_data;
-}
-
-static inline size_t bufsize(struct buffer_head *buffer)
-{
-	return buffer->b_size;
-}
-
 static inline block_t bufindex(struct buffer_head *buffer)
 {
 	/*
@@ -646,16 +629,6 @@ static inline block_t bufindex(struct buffer_head *buffer)
 	assert(inode == tux_sb(inode->i_sb)->volmap ||
 	       inode == tux_sb(inode->i_sb)->logmap);
 	return (page_offset(page) + bh_offset(buffer)) >> inode->i_blkbits;
-}
-
-static inline int bufcount(struct buffer_head *buffer)
-{
-	return atomic_read(&buffer->b_count);
-}
-
-static inline int buffer_clean(struct buffer_head *buffer)
-{
-	return !buffer_dirty(buffer) || buffer_uptodate(buffer);
 }
 
 /* dir.c */
@@ -686,34 +659,12 @@ int syncio(int rw, struct block_device *dev, loff_t offset, unsigned vecs,
 int devio(int rw, struct block_device *dev, loff_t offset, void *data,
 	  unsigned len);
 int blockio(int rw, struct buffer_head *buffer, block_t block);
+int blockio_vec(int rw, struct bufvec *bufvec, block_t block, unsigned count);
 
 /* temporary hack for buffer */
 struct buffer_head *peekblk(struct address_space *mapping, block_t iblock);
 struct buffer_head *blockread(struct address_space *mapping, block_t iblock);
 struct buffer_head *blockget(struct address_space *mapping, block_t iblock);
-
-static inline void blockput(struct buffer_head *buffer)
-{
-	put_bh(buffer);
-}
-
-static inline void blockput_free(struct buffer_head *buffer)
-{
-	/* Untested */
-	WARN_ON(1);
-	bforget(buffer);
-	blockput(buffer);
-}
-
-static inline int buffer_empty(struct buffer_head *buffer)
-{
-	return 1;
-}
-
-static inline struct buffer_head *set_buffer_empty(struct buffer_head *buffer)
-{
-	return buffer;
-}
 
 static inline struct buffer_head *blockdirty(struct buffer_head *buffer, unsigned newdelta)
 {
@@ -799,6 +750,10 @@ static inline struct btree_ops *dtree_ops(void)
 {
 	return &dtree2_ops;
 }
+
+/* filemap.c */
+int tux3_filemap_overwrite_io(int rw, struct bufvec *bufvec);
+int tux3_filemap_redirect_io(int rw, struct bufvec *bufvec);
 
 /* iattr.c */
 void dump_attrs(struct inode *inode);
