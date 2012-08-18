@@ -131,7 +131,7 @@ static inline void *decode48(void *at, u64 *val)
 
 /* Tux3 disk format */
 
-#define TUX3_MAGIC		"tux3" "\xdd\x09\x03\x10"
+#define TUX3_MAGIC		"tux3" "\x20\x12\x02\x16"
 /*
  * TUX3_LABEL includes the date of the last incompatible disk format change
  * NOTE: Always update this history for each incompatible change!
@@ -143,6 +143,7 @@ static inline void *decode48(void *at, u64 *val)
  * 2008-12-12: Atom dictionary size in disksuper instead of atable->i_size
  * 2009-02-28: Attributes renumbered, rdev added
  * 2009-03-10: Alignment fix of disksuper
+ * 2012-02-16: Update for atomic commit
  */
 
 #define TUX3_MAGIC_LOG		0x10ad
@@ -406,6 +407,7 @@ typedef struct inode {
 	struct sb *i_sb;
 	map_t *map;
 	loff_t i_size;
+	block_t i_blocks;
 	unsigned i_version;
 	struct timespec i_mtime, i_ctime, i_atime;
 	unsigned i_uid, i_gid, i_nlink;
