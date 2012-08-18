@@ -147,8 +147,8 @@ static int alloc_inum(struct inode *inode, inum_t goal)
 {
 	struct sb *sb = tux_sb(inode->i_sb);
 	struct btree *itable = itable_btree(sb);
-	int err = 0, depth = itable->root.depth;
 	struct cursor *cursor;
+	int err = 0;
 
 	cursor = alloc_cursor(itable, 1); /* +1 for now depth */
 	if (!cursor)
@@ -167,12 +167,12 @@ retry:
 	/* FIXME: inum allocation should check min and max */
 	trace("create inode 0x%Lx", (L)goal);
 	assert(!tux_inode(inode)->btree.root.depth);
-	assert(goal < next_key(cursor, depth));
+	assert(goal < cursor_next_key(cursor));
 	while (1) {
 		trace_off("find empty inode in [%Lx] base %Lx", (L)bufindex(cursor_leafbuf(cursor)), (L)ibase(leaf));
 		goal = find_empty_inode(itable, bufdata(cursor_leafbuf(cursor)), goal);
-		trace("result inum is %Lx, limit is %Lx", (L)goal, (L)next_key(cursor, depth));
-		if (goal < next_key(cursor, depth))
+		trace("result inum is %Lx, limit is %Lx", (L)goal, (L)cursor_next_key(cursor));
+		if (goal < cursor_next_key(cursor))
 			break;
 		int more = cursor_advance(cursor);
 		if (more < 0) {
@@ -424,9 +424,7 @@ static int tux_can_truncate(struct inode *inode)
 static void __tux3_truncate(struct inode *inode)
 {
 	struct sb *sb = tux_sb(inode->i_sb);
-	struct btree_chop_info chop_info = {
-		.key = (inode->i_size + sb->blockmask) >> sb->blockbits,
-	};
+	tuxkey_t index = (inode->i_size + sb->blockmask) >> sb->blockbits;
 	int err;
 
 	if (!tux_can_truncate(inode))
@@ -434,7 +432,7 @@ static void __tux3_truncate(struct inode *inode)
 	/* FIXME: must fix expand size */
 	WARN_ON(inode->i_size);
 	block_truncate_page(inode->i_mapping, inode->i_size, tux3_get_block);
-	err = btree_chop(&tux_inode(inode)->btree, &del_info, 0);
+	err = btree_chop(&tux_inode(inode)->btree, index, TUXKEY_LIMIT);
 	inode->i_blocks = ((inode->i_size + sb->blockmask)
 			   & ~(loff_t)sb->blockmask) >> 9;
 	inode->i_mtime = inode->i_ctime = gettime();
