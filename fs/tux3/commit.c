@@ -188,19 +188,19 @@ static int rollup_log(struct sb *sb)
 	 * obsolete log records on previous rollup.
 	 */
 	unstash(sb, &sb->derollup, relog_as_bfree);
-#ifndef __KERNEL__
+
 	/*
 	 * Merge dirty bnode blocks buffers to volmap dirty list, then
 	 * bnode blocks will be flushed via volmap with leaves.
 	 */
 	list_splice_init(dirty_head_when(&sb->pinned, rollup),
-			 dirty_head(&mapping(sb->volmap)->dirty));
+			 dirty_head(inode_dirty_heads(sb->volmap)));
 
 	/* Flush bitmap */
 	trace("> flush bitmap %u", rollup);
 	tux3_flush_inode(sb->bitmap, rollup);
 	trace("< done bitmap %u", rollup);
-#endif
+
 	trace("> apply orphan inodes %u", rollup);
 	{
 		int err;

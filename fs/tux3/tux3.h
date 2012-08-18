@@ -314,6 +314,7 @@ typedef struct {
 	struct xcache *xcache;	/* Extended attribute cache */
 	struct list_head alloc_list; /* link for deferred inum allocation */
 	struct list_head orphan_list; /* link for orphan inode list */
+	struct dirty_buffers dirty; /* list for dirty buffers */
 	struct inode vfs_inode;	/* Generic kernel inode */
 } tuxnode_t;
 
@@ -363,6 +364,11 @@ static inline void free(void *ptr)
 static inline struct block_device *sb_dev(struct sb *sb)
 {
 	return sb->vfs_sb->s_bdev;
+}
+
+static inline struct dirty_buffers *inode_dirty_heads(struct inode *inode)
+{
+	return &tux_inode(inode)->dirty;
 }
 #else /* !__KERNEL__ */
 typedef struct inode {
@@ -429,6 +435,11 @@ static inline map_t *mapping(struct inode *inode)
 static inline struct dev *sb_dev(struct sb *sb)
 {
 	return sb->dev;
+}
+
+static inline struct dirty_buffers *inode_dirty_heads(struct inode *inode)
+{
+	return &mapping(inode)->dirty;
 }
 #endif /* !__KERNEL__ */
 
@@ -644,8 +655,6 @@ static inline int buffer_clean(struct buffer_head *buffer)
 {
 	return !buffer_dirty(buffer) || buffer_uptodate(buffer);
 }
-
-#include "dirty-buffer.h"	/* remove this after atomic commit */
 
 /* dir.c */
 extern const struct file_operations tux_dir_fops;
@@ -891,6 +900,8 @@ int all_clear(u8 *bitmap, unsigned start, unsigned count);
 int bytebits(u8 c);
 
 /* writeback.c */
+void tux3_mark_buffer_dirty(struct buffer_head *buffer);
+void tux3_mark_buffer_rollup(struct buffer_head *buffer);
 int tux3_flush_inode(struct inode *inode, unsigned delta);
 int tux3_flush_inodes(struct sb *sb, unsigned delta);
 
@@ -932,4 +943,6 @@ static inline struct buffer_head *vol_bread(struct sb *sb, block_t block)
 {
 	return blockread(mapping(sb->volmap), block);
 }
-#endif
+
+#include "dirty-buffer.h"	/* remove this after atomic commit */
+#endif /* !TUX3_H */
