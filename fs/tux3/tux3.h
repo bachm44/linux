@@ -18,6 +18,7 @@
 #define die(code)		BUG_ON(1)
 
 #include "trace.h"
+#include "buffer.h"
 
 /*
  * Choose carefully:
@@ -213,26 +214,7 @@ struct stash { struct flink_head head; u64 *pos, *top; };
 
 #ifdef __KERNEL__
 /* FIXME */
-#define DEFAULT_DIRTY_WHEN	0
-struct dirty_buffers {
-};
-
-/* Can we modify buffer from delta */
-static inline int buffer_can_modify(struct buffer_head *buffer, unsigned delta)
-{
-	return 1;
-}
-
-static inline void init_dirty_buffers(struct dirty_buffers *dirty)
-{
-}
-
-static inline int sync_inodes(struct sb *sb, unsigned delta)
-{
-	return 0;
-}
-
-static inline int blockio(int rw, struct buffer_head *buffer, block_t block)
+static inline int tux3_flush_inodes(struct sb *sb, unsigned delta)
 {
 	return 0;
 }
@@ -655,7 +637,9 @@ static inline block_t bufindex(struct buffer_head *buffer)
 	 */
 	struct inode *inode = buffer_inode(buffer);
 	struct page *page = buffer->b_page;
-	assert(inode == tux_sb(inode->i_sb)->volmap);
+	/* FIXME: replay is unnecessary to use bufindex. remove those */
+	assert(inode == tux_sb(inode->i_sb)->volmap ||
+	       inode == tux_sb(inode->i_sb)->logmap);
 	return (page_offset(page) + bh_offset(buffer)) >> inode->i_blkbits;
 }
 
@@ -698,6 +682,7 @@ int syncio(int rw, struct block_device *dev, loff_t offset, unsigned vecs,
 	   struct bio_vec *vec);
 int devio(int rw, struct block_device *dev, loff_t offset, void *data,
 	  unsigned len);
+int blockio(int rw, struct buffer_head *buffer, block_t block);
 
 /* temporary hack for buffer */
 struct buffer_head *peekblk(struct address_space *mapping, block_t iblock);
