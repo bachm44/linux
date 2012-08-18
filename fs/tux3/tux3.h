@@ -599,6 +599,9 @@ struct btree_ops {
 	int (*leaf_read)(struct btree *btree, tuxkey_t key_bottom, tuxkey_t key_limit, void *leaf, struct btree_key_range *key);
 	int (*balloc)(struct sb *sb, unsigned blocks, block_t *block);
 	int (*bfree)(struct sb *sb, block_t block, unsigned blocks);
+
+	void *private_ops;
+
 	/*
 	 * for debugging
 	 */
@@ -933,12 +936,11 @@ static inline struct btree_ops *dtree_ops(void)
 }
 
 /* iattr.c */
-unsigned encode_asize(unsigned bits);
 void dump_attrs(struct inode *inode);
 void *encode_kind(void *attrs, unsigned kind, unsigned version);
-void *encode_attrs(struct inode *inode, void *attrs, unsigned size);
 void *decode_kind(void *attrs, unsigned *kind, unsigned *version);
 void *decode_attrs(struct inode *inode, void *attrs, unsigned size);
+extern struct ileaf_attr_ops iattr_ops;
 
 /* ileaf.c */
 void *ileaf_lookup(struct btree *btree, inum_t inum, struct ileaf *leaf, unsigned *result);
@@ -946,14 +948,13 @@ inum_t find_empty_inode(struct btree *btree, struct ileaf *leaf, inum_t goal);
 int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
 		    int (*func)(struct btree *, inum_t, void *, u16, void *),
 		    void *func_data);
-void ileaf_purge(struct btree *btree, inum_t inum, struct ileaf *leaf);
 extern struct btree_ops itable_ops;
+extern struct btree_ops otable_ops;
 
 /* inode.c */
 struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
 void del_defer_alloc_inum(struct inode *inode);
-int purge_inum(struct btree *btree, inum_t inum);
 
 /* log.c */
 extern unsigned log_size[];
@@ -994,6 +995,7 @@ void destroy_defer_bfree(struct stash *defree);
 
 /* orphan.c */
 void clean_orphan_list(struct list_head *head);
+extern struct ileaf_attr_ops oattr_ops;
 int tux3_rollup_orphan_add(struct sb *sb, struct list_head *orphan_add);
 int tux3_rollup_orphan_del(struct sb *sb, struct list_head *orphan_del);
 int tux3_mark_inode_orphan(struct inode *inode);
