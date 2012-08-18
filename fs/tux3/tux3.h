@@ -692,6 +692,16 @@ struct delete_info {
 
 typedef int (*unstash_t)(struct sb *sb, u64 val);
 
+/* Redirect ptr which is pointing data of src from src to dst */
+static inline void *ptr_redirect(void *ptr, void *src, void *dst)
+{
+	if (ptr) {
+		assert(ptr >= src);
+		return dst + (ptr - src);
+	}
+	return NULL;
+}
+
 #ifdef __KERNEL__
 static inline struct timespec gettime(void)
 {
@@ -836,6 +846,7 @@ int load_sb(struct sb *sb);
 int save_sb(struct sb *sb);
 int load_itable(struct sb *sb);
 void clean_buffer(struct buffer_head *buffer);
+int apply_defered_bfree(struct sb *sb, u64 val);
 int force_rollup(struct sb *sb);
 int force_delta(struct sb *sb);
 int change_begin(struct sb *sb);

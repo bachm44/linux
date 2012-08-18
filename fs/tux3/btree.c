@@ -161,10 +161,10 @@ static void level_pop_blockput(struct cursor *cursor)
 	blockput(level_pop(cursor));
 }
 
+/* There is no next entry? */
 static inline int level_finished(struct cursor *cursor, int level)
 {
 	struct bnode *node = cursor_node(cursor, level);
-
 	return cursor->path[level].next == node->entries + bcount(node);
 }
 // also write level_beginning!!!
@@ -350,7 +350,7 @@ static void level_redirect_blockput(struct cursor *cursor, int level, struct buf
 
 	/* If this level has ->next, update ->next to the clone buffer */
 	if (next)
-		next = bufdata(clone) + ((void *)next - bufdata(buffer));
+		next = ptr_redirect(next, bufdata(buffer), bufdata(clone));
 
 	memcpy(bufdata(clone), bufdata(buffer), bufsize(clone));
 	level_replace_blockput(cursor, level, clone, next);
@@ -364,40 +364,59 @@ int cursor_redirect(struct cursor *cursor)
 	struct btree *btree = cursor->btree;
 	unsigned level = btree->root.depth;
 	struct sb *sb = btree->sb;
-	block_t child;
+	block_t uninitialized_var(child);
 
 	while (1) {
-		struct buffer_head *buffer = cursor->path[level].buffer;
-		if (buffer_dirty(buffer))
-			return 0;
+		struct buffer_head *buffer;
+		block_t uninitialized_var(oldblock);
+		block_t uninitialized_var(newblock);
+		int redirected = 0;
 
-		/* Redirect buffer before changing */
-		struct buffer_head *clone = new_block(btree);
-		if (IS_ERR(clone))
-			return PTR_ERR(clone);
-		block_t oldblock = bufindex(buffer), newblock = bufindex(clone);
-		trace("redirect block %Lx to %Lx", (L)oldblock, (L)newblock);
-		level_redirect_blockput(cursor, level, clone);
-		if (level == btree->root.depth) {
-			/* This is leaf buffer */
-			mark_buffer_dirty_atomic(clone);
-			log_leaf_redirect(sb, oldblock, newblock);
-			defer_bfree(&sb->defree, oldblock, 1);
-			goto parent_level;
+		buffer = cursor->path[level].buffer;
+		/* If buffer is not dirty, redirect it to modify */
+		if (!buffer_dirty(buffer)) {
+			redirected = 1;
+
+			/* Redirect buffer before changing */
+			struct buffer_head *clone = new_block(btree);
+			if (IS_ERR(clone))
+				return PTR_ERR(clone);
+			oldblock = bufindex(buffer);
+			newblock = bufindex(clone);
+			trace("redirect %Lx to %Lx", (L)oldblock, (L)newblock);
+			level_redirect_blockput(cursor, level, clone);
+			if (level == btree->root.depth) {
+				/* This is leaf buffer */
+				mark_buffer_dirty_atomic(clone);
+				log_leaf_redirect(sb, oldblock, newblock);
+				defer_bfree(&sb->defree, oldblock, 1);
+				goto parent_level;
+			}
+			/* This is bnode buffer */
+			mark_buffer_rollup_atomic(clone);
+			log_bnode_redirect(sb, oldblock, newblock);
+			defer_bfree(&sb->derollup, oldblock, 1);
+		} else {
+			if (level == btree->root.depth) {
+				/* This is leaf buffer */
+				goto parent_level;
+			}
 		}
-
-		/* This is bnode buffer */
-		mark_buffer_rollup_atomic(clone);
-		log_bnode_redirect(sb, oldblock, newblock);
-		defer_bfree(&sb->derollup, oldblock, 1);
 
 		/* Update entry for the redirected child block */
 		trace("update parent");
+		block_t block = bufindex(cursor->path[level].buffer);
 		struct index_entry *entry = cursor->path[level].next - 1;
 		entry->block = to_be_u64(child);
-		log_bnode_update(sb, newblock, child, from_be_u64(entry->key));
+		log_bnode_update(sb, block, child, from_be_u64(entry->key));
 
 parent_level:
+		/* If it is already redirected, ancestor is also redirected */
+		if (!redirected) {
+			cursor_check(cursor);
+			return 0;
+		}
+
 		if (!level--) {
 			trace("redirect root");
 			assert(oldblock == btree->root.block);
@@ -422,7 +441,7 @@ static void remove_index(struct cursor *cursor, int level)
 		(char *)&node->entries[count] - (char *)cursor->path[level].next);
 	node->count = to_be_u32(count - 1);
 	--(cursor->path[level].next);
-	mark_buffer_dirty(cursor->path[level].buffer);
+	mark_buffer_rollup_non(cursor->path[level].buffer);
 
 	/* no separator for last entry */
 	if (level_finished(cursor, level))
@@ -440,7 +459,7 @@ static void remove_index(struct cursor *cursor, int level)
 			if (!i)
 				return;
 		(cursor->path[i].next - 1)->key = sep;
-		mark_buffer_dirty(cursor->path[i].buffer);
+		mark_buffer_rollup_non(cursor->path[i].buffer);
 	}
 }
 
@@ -462,7 +481,9 @@ static void blockput_free(struct btree *btree, struct buffer_head *buffer)
 		return;
 	}
 	blockput(buffer);
-	(btree->ops->bfree)(sb, block, 1);
+	/* FIXME: ->derollup (and log_bfree_rollup) or ->defree? */
+	defer_bfree(&sb->defree, block, 1);
+	log_bfree(sb, block, 1);
 	set_buffer_empty(buffer); // free it!!! (and need a buffer free state)
 }
 
@@ -484,29 +505,30 @@ int tree_chop(struct btree *btree, struct delete_info *info, millisecond_t deadl
 
 	down_write(&btree->lock);
 	probe(cursor, info->key);	/* FIXME: info->resume? */
-	leafbuf = level_pop(cursor);
 
-	/* leaf walk */
+	/* Walk leaves */
 	while (1) {
 		if ((ret = cursor_redirect(cursor)))
-			goto error_leaf_chop;
+			goto out;
+		leafbuf = level_pop(cursor);
+
 		ret = (ops->leaf_chop)(btree, info->key, bufdata(leafbuf));
 		if (ret) {
 			if (ret < 0)
 				goto error_leaf_chop;
-			mark_buffer_dirty(leafbuf);
+			mark_buffer_dirty_non(leafbuf);
 		}
 
-		/* try to merge this leaf with prev */
+		/* Try to merge this leaf with prev */
 		if (leafprev) {
 			struct vleaf *this = bufdata(leafbuf);
 			struct vleaf *that = bufdata(leafprev);
-			/* try to merge leaf with prev */
+			/* Try to merge leaf with prev */
 			if ((ops->leaf_need)(btree, this) <= (ops->leaf_free)(btree, that)) {
 				trace(">>> can merge leaf %p into leaf %p", leafbuf, leafprev);
 				(ops->leaf_merge)(btree, that, this);
 				remove_index(cursor, level);
-				mark_buffer_dirty(leafprev);
+				mark_buffer_dirty_non(leafprev);
 				blockput_free(btree, leafbuf);
 				//dirty_buffer_count_check(sb);
 				goto keep_prev_leaf;
@@ -537,7 +559,7 @@ keep_prev_leaf:
 					trace(">>> can merge node %p into node %p", this, that);
 					merge_nodes(that, this);
 					remove_index(cursor, level - 1);
-					mark_buffer_dirty(prev[level]);
+					mark_buffer_rollup_non(prev[level]);
 					blockput_free(btree, level_pop(cursor));
 					//dirty_buffer_count_check(sb);
 					goto keep_prev_node;
@@ -570,7 +592,7 @@ keep_prev_node:
 				goto out;
 			}
 			level--;
-			trace_off(printf("pop to level %i, block %Lx, %i of %i nodes\n", level, bufindex(cursor->path[level].buffer), cursor->path[level].next - cursor_node(cursor, level)->entries, bcount(cursor_node(cursor, level))););
+			trace_off("pop to level %i, block %Lx, %i of %i nodes", level, bufindex(cursor->path[level].buffer), cursor->path[level].next - cursor_node(cursor, level)->entries, bcount(cursor_node(cursor, level)));
 		}
 
 		/* push back down to leaf level */
@@ -589,6 +611,7 @@ keep_prev_node:
 			ret = -EIO;
 			goto out;
 		}
+		level_push(cursor, leafbuf, NULL);
 	}
 
 error_leaf_chop:
@@ -835,9 +858,11 @@ int free_empty_btree(struct btree *btree)
 		return -EIO;
 	struct bnode *rootnode = bufdata(rootbuf);
 	assert(bcount(rootnode) == 1);
-	/* FIXME: error check */
-	(btree->ops->bfree)(sb, from_be_u64(rootnode->entries[0].block), 1);
-	(btree->ops->bfree)(sb, bufindex(rootbuf), 1);
+	/* FIXME: ->derollup (and log_bfree_rollup) or ->defree? */
+	defer_bfree(&sb->defree, from_be_u64(rootnode->entries[0].block), 1);
+	log_bfree(sb, from_be_u64(rootnode->entries[0].block), 1);
+	defer_bfree(&sb->defree, bufindex(rootbuf), 1);
+	log_bfree(sb, bufindex(rootbuf), 1);
 	blockput(rootbuf);
 	return 0;
 }

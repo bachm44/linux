@@ -414,14 +414,14 @@ void dwalk_redirect(struct dwalk *walk, struct dleaf *src, struct dleaf *dst)
 	return;
 #endif
 	walk->leaf = dst;
-	walk->group = (void *)dst + ((void *)walk->group - (void *)src);
-	walk->gstop = (void *)dst + ((void *)walk->gstop - (void *)src);
-	walk->gdict = (void *)dst + ((void *)walk->gdict - (void *)src);
-	walk->entry = (void *)dst + ((void *)walk->entry - (void *)src);
-	walk->estop = (void *)dst + ((void *)walk->estop - (void *)src);
-	walk->exbase = (void *)dst + ((void *)walk->exbase - (void *)src);
-	walk->extent = (void *)dst + ((void *)walk->extent - (void *)src);
-	walk->exstop = (void *)dst + ((void *)walk->exstop - (void *)src);
+	walk->group = ptr_redirect(walk->group, src, dst);
+	walk->gstop = ptr_redirect(walk->gstop, src, dst);
+	walk->gdict = ptr_redirect(walk->gdict, src, dst);
+	walk->entry = ptr_redirect(walk->entry, src, dst);
+	walk->estop = ptr_redirect(walk->estop, src, dst);
+	walk->exbase = ptr_redirect(walk->exbase, src, dst);
+	walk->extent = ptr_redirect(walk->extent, src, dst);
+	walk->exstop = ptr_redirect(walk->exstop, src, dst);
 }
 
 /* FIXME: current code is assuming the entry has only one extent. */
@@ -822,16 +822,19 @@ static int dleaf_chop(struct btree *btree, tuxkey_t chop, vleaf *vleaf)
 		block_t block = dwalk_block(&walk);
 		unsigned count = chop - dwalk_index(&walk);
 
-		/* FIXME: err check? */
-		(btree->ops->bfree)(sb, block + count, dwalk_count(&walk) - count);
+		/* FIXME: should set buffer clean? */
+		defer_bfree(&sb->defree, block + count, dwalk_count(&walk) - count);
+		log_bfree(sb, block + count, dwalk_count(&walk) - count);
+
 		dwalk_update(&walk, make_extent(block, count));
 		if (!dwalk_next(&walk))
 			goto out;
 	}
 	struct dwalk rewind = walk;
 	do {
-		/* FIXME: err check? */
-		(btree->ops->bfree)(sb, dwalk_block(&walk), dwalk_count(&walk));
+		/* FIXME: should set buffer clean? */
+		defer_bfree(&sb->defree, dwalk_block(&walk), dwalk_count(&walk));
+		log_bfree(sb, dwalk_block(&walk), dwalk_count(&walk));
 	} while (dwalk_next(&walk));
 	dwalk_chop(&rewind);
 out:
