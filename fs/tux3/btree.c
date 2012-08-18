@@ -236,6 +236,19 @@ void free_cursor(struct cursor *cursor)
 	free(cursor);
 }
 
+/* Lookup the index entry contains key */
+static struct index_entry *bnode_lookup(struct bnode *node, tuxkey_t key)
+{
+	struct index_entry *next = node->entries, *top = next + bcount(node);
+	assert(bcount(node) > 0);
+	/* binary search goes here */
+	while (++next < top) {
+		if (from_be_u64(next->key) > key)
+			break;
+	}
+	return next - 1;
+}
+
 int probe(struct cursor *cursor, tuxkey_t key)
 {
 	struct btree *btree = cursor->btree;
@@ -249,13 +262,9 @@ int probe(struct cursor *cursor, tuxkey_t key)
 	struct bnode *node = bufdata(buffer);
 
 	for (i = 0; i < depth; i++) {
-		struct index_entry *next = node->entries, *top = next + bcount(node);
-		while (++next < top) /* binary search goes here */
-			if (from_be_u64(next->key) > key)
-				break;
-		trace("probe level %i, %ti of %i", i, next - node->entries, bcount(node));
-		level_push(cursor, buffer, next);
-		if (!(buffer = vol_bread(btree->sb, from_be_u64((next - 1)->block))))
+		struct index_entry *entry = bnode_lookup(node, key);
+		level_push(cursor, buffer, entry + 1);
+		if (!(buffer = vol_bread(btree->sb, from_be_u64(entry->block))))
 			goto eek;
 		node = (struct bnode *)bufdata(buffer);
 	}
@@ -630,14 +639,35 @@ out:
 	return ret;
 }
 
+/* root must be initialized by zero */
+static void bnode_init_root(struct bnode *root, unsigned count, block_t left,
+			    block_t right, tuxkey_t rkey)
+{
+	root->count		= to_be_u32(count);
+	root->entries[0].block	= to_be_u64(left);
+	root->entries[1].block	= to_be_u64(right);
+	root->entries[1].key	= to_be_u64(rkey);
+}
+
 /* Insertion */
 
-static void add_child(struct bnode *node, struct index_entry *p, block_t child, u64 childkey)
+static void bnode_add_index(struct bnode *node, struct index_entry *p,
+			    block_t child, u64 childkey)
 {
-	vecmove(p + 1, p, node->entries + bcount(node) - p);
-	p->block = to_be_u64(child);
-	p->key = to_be_u64(childkey);
-	node->count = to_be_u32(bcount(node) + 1);
+	unsigned count = bcount(node);
+	vecmove(p + 1, p, node->entries + count - p);
+	p->block	= to_be_u64(child);
+	p->key		= to_be_u64(childkey);
+	node->count	= to_be_u32(count + 1);
+}
+
+static void bnode_split(struct bnode *src, unsigned pos, struct bnode *dst)
+{
+	dst->count = to_be_u32(bcount(src) - pos);
+	src->count = to_be_u32(pos);
+
+	memcpy(&dst->entries[0], &src->entries[pos],
+	       bcount(dst) * sizeof(struct index_entry));
 }
 
 /*
@@ -665,7 +695,7 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 
 		/* insert and exit if not full */
 		if (bcount(parent) < btree->sb->entries_per_node) {
-			add_child(parent, at->next, childblock, childkey);
+			bnode_add_index(parent, at->next, childblock, childkey);
 			if (!keep)
 				at->next++;
 			log_bnode_add(sb, bufindex(parentbuf), childblock, childkey);
@@ -681,9 +711,8 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 		struct bnode *newnode = bufdata(newbuf);
 		unsigned half = bcount(parent) / 2;
 		u64 newkey = from_be_u64(parent->entries[half].key);
-		newnode->count = to_be_u32(bcount(parent) - half);
-		memcpy(&newnode->entries[0], &parent->entries[half], bcount(newnode) * sizeof(struct index_entry));
-		parent->count = to_be_u32(half);
+
+		bnode_split(parent, half, newnode);
 		log_bnode_split(sb, bufindex(parentbuf), half, bufindex(newbuf));
 
 		/* if the cursor is in the new node, use that as the parent */
@@ -699,7 +728,7 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 		} else
 			mark_buffer_rollup_non(newbuf);
 
-		add_child(parent, at->next, childblock, childkey);
+		bnode_add_index(parent, at->next, childblock, childkey);
 		if (!keep)
 			at->next++;
 		log_bnode_add(sb, bufindex(parentbuf), childblock, childkey);
@@ -727,12 +756,10 @@ static int insert_leaf(struct cursor *cursor, tuxkey_t childkey, struct buffer_h
 	block_t newrootblock = bufindex(newbuf);
 	block_t oldrootblock = btree->root.block;
 	int left_node = bufindex(cursor->path[0].buffer) != childblock;
-	newroot->count = to_be_u32(2);
-	newroot->entries[0].block = to_be_u64(oldrootblock);
-	newroot->entries[1].key = to_be_u64(childkey);
-	newroot->entries[1].block = to_be_u64(childblock);
+	bnode_init_root(newroot, 2, oldrootblock, childblock, childkey);
 	level_root_add(cursor, newbuf, newroot->entries + 1 + !left_node);
 	log_bnode_root(sb, newrootblock, 2, oldrootblock, childblock, childkey);
+
 	/* Change btree to point the new root */
 	btree->root.block = newrootblock;
 	btree->root.depth++;
@@ -821,10 +848,7 @@ int alloc_empty_btree(struct btree *btree)
 	block_t leafblock = bufindex(leafbuf);
 	trace("root at %Lx", (L)rootblock);
 	trace("leaf at %Lx", (L)leafblock);
-	rootnode->entries[0].block = to_be_u64(leafblock);
-	rootnode->count = to_be_u32(1);
-	btree->root = (struct root){ .block = rootblock, .depth = 1 };
-
+	bnode_init_root(rootnode, 1, leafblock, 0, 0);
 	log_bnode_root(sb, rootblock, 1, leafblock, 0, 0);
 	log_balloc(sb, leafblock, 1);
 
@@ -833,6 +857,7 @@ int alloc_empty_btree(struct btree *btree)
 	mark_buffer_dirty_non(leafbuf);
 	blockput(leafbuf);
 
+	btree->root = (struct root){ .block = rootblock, .depth = 1 };
 	mark_btree_dirty(btree);
 
 	return 0;
@@ -897,18 +922,13 @@ int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 		      block_t left, block_t right, tuxkey_t rkey)
 {
 	struct buffer_head *rootbuf;
-	struct bnode *newroot;
 
 	rootbuf = vol_getblk(sb, root);
 	if (!rootbuf)
 		return -ENOMEM;
 	memset(bufdata(rootbuf), 0, bufsize(rootbuf));
 
-	newroot = bufdata(rootbuf);
-	newroot->count = to_be_u32(count);
-	newroot->entries[0].block = to_be_u64(left);
-	newroot->entries[1].block = to_be_u64(right);
-	newroot->entries[1].key = to_be_u64(rkey);
+	bnode_init_root(bufdata(rootbuf), count, left, right, rkey);
 
 	mark_buffer_rollup_atomic(rootbuf);
 	blockput(rootbuf);
@@ -923,7 +943,6 @@ int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 int replay_bnode_split(struct sb *sb, block_t src, unsigned pos, block_t dst)
 {
 	struct buffer_head *srcbuf, *dstbuf;
-	struct bnode *dstnode, *srcnode;
 	int err = 0;
 
 	srcbuf = vol_getblk(sb, src);
@@ -939,12 +958,7 @@ int replay_bnode_split(struct sb *sb, block_t src, unsigned pos, block_t dst)
 	}
 	memset(bufdata(dstbuf), 0, bufsize(dstbuf));
 
-	srcnode = bufdata(srcbuf);
-	dstnode = bufdata(dstbuf);
-
-	dstnode->count = to_be_u32(bcount(srcnode) - pos);
-	memcpy(&dstnode->entries[0], &srcnode->entries[pos], bcount(dstnode) * sizeof(struct index_entry));
-	srcnode->count = to_be_u32(pos);
+	bnode_split(bufdata(srcbuf), pos, bufdata(dstbuf));
 
 	mark_buffer_rollup_non(srcbuf);
 	mark_buffer_rollup_atomic(dstbuf);
@@ -981,16 +995,8 @@ static int replay_bnode_change(struct sb *sb, block_t parent, block_t child,
 
 static void add_func(struct bnode *bnode, block_t child, tuxkey_t key)
 {
-	struct index_entry *entry = bnode->entries;
-	struct index_entry *top = entry + bcount(bnode);
-
-	while (entry < top) { /* binary search goes here */
-		if (from_be_u64(entry->key) > key)
-			break;
-		entry++;
-	}
-
-	add_child(bnode, entry, child, key);
+	struct index_entry *entry = bnode_lookup(bnode, key) + 1;
+	bnode_add_index(bnode, entry, child, key);
 }
 
 int replay_bnode_add(struct sb *sb, block_t parent, block_t child, tuxkey_t key)
@@ -1000,16 +1006,8 @@ int replay_bnode_add(struct sb *sb, block_t parent, block_t child, tuxkey_t key)
 
 static void update_func(struct bnode *bnode, block_t child, tuxkey_t key)
 {
-	struct index_entry *entry = bnode->entries;
-	struct index_entry *top = entry + bcount(bnode);
-
-	while (entry < top) { /* binary search goes here */
-		if (from_be_u64(entry->key) == key)
-			break;
-		entry++;
-	}
-	assert(entry < top);
-
+	struct index_entry *entry = bnode_lookup(bnode, key);
+	assert(from_be_u64(entry->key) == key);
 	entry->block = to_be_u64(child);
 }
 
