@@ -590,7 +590,6 @@ struct btree_ops {
 	void (*btree_init)(struct btree *btree);
 	int (*leaf_init)(struct btree *btree, vleaf *leaf);
 	tuxkey_t (*leaf_split)(struct btree *btree, tuxkey_t hint, vleaf *from, vleaf *into);
-	void *(*leaf_resize)(struct btree *btree, tuxkey_t key, vleaf *leaf, unsigned size);
 	/* return value: 1 - modified, 0 - not modified, < 0 - error */
 	int (*leaf_chop)(struct btree *btree, tuxkey_t start, u64 len, vleaf *leaf);
 	/* return value: 1 - merged, 0 - couldn't merge */
@@ -939,7 +938,6 @@ static inline struct btree_ops *dtree_ops(void)
 void dump_attrs(struct inode *inode);
 void *encode_kind(void *attrs, unsigned kind, unsigned version);
 void *decode_kind(void *attrs, unsigned *kind, unsigned *version);
-void *decode_attrs(struct inode *inode, void *attrs, unsigned size);
 extern struct ileaf_attr_ops iattr_ops;
 
 /* ileaf.c */
