@@ -95,6 +95,12 @@ static int ileaf_sniff(struct btree *btree, vleaf *leaf)
 	return ((struct ileaf *)leaf)->magic == to_be_u16(TUX3_MAGIC_ILEAF);
 }
 
+static int ileaf_can_free(struct btree *btree, void *leaf)
+{
+	struct ileaf *ileaf = leaf;
+	return icount(ileaf) == 0;
+}
+
 static void ileaf_dump(struct btree *btree, vleaf *vleaf)
 {
 	if (!tux3_trace)
@@ -284,24 +290,6 @@ static int ileaf_merge(struct btree *btree, void *vinto, void *vfrom)
 	into->count = to_be_u16(count + fromcount);
 
 	return 1;
-}
-
-inum_t find_empty_inode(struct btree *btree, struct ileaf *leaf, inum_t goal)
-{
-	unsigned at = goal - ibase(leaf);
-	assert(goal >= ibase(leaf));
-
-	if (at < icount(leaf)) {
-		be_u16 *dict = ileaf_dict(btree, leaf);
-		unsigned offset = atdict(dict, at);
-		for (; at < icount(leaf); at++) {
-			unsigned limit = __atdict(dict, at + 1);
-			if (offset == limit)
-				break;
-			offset = limit;
-		}
-	}
-	return ibase(leaf) + at;
 }
 
 int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
@@ -507,6 +495,7 @@ struct btree_ops itable_ops = {
 	.private_ops	= &iattr_ops,
 
 	.leaf_sniff	= ileaf_sniff,
+	.leaf_can_free	= ileaf_can_free,
 	.leaf_dump	= ileaf_dump,
 };
 
@@ -522,5 +511,46 @@ struct btree_ops otable_ops = {
 	.private_ops	= &oattr_ops,
 
 	.leaf_sniff	= ileaf_sniff,
+	.leaf_can_free	= ileaf_can_free,
 	.leaf_dump	= ileaf_dump,
 };
+
+/*
+ * Find free inum
+ * (callback for btree_traverse())
+ *
+ * return value:
+ * 1 - found
+ * 0 - not found
+ */
+int ileaf_find_free(struct btree *btree, tuxkey_t key_bottom,
+		    tuxkey_t key_limit, void *leaf,
+		    tuxkey_t key, u64 len, void *data)
+{
+	unsigned at = key - ibase(leaf);
+	unsigned count = icount(leaf);
+
+	key_limit = min(key_limit, key + len);
+
+	if (at < count) {
+		be_u16 *dict = ileaf_dict(btree, leaf);
+		unsigned limit, offset = atdict(dict, at);
+
+		while (at < count) {
+			at++;
+			limit = __atdict(dict, at);
+			if (offset == limit) {
+				at--;
+				break;
+			}
+			offset = limit;
+		}
+	}
+
+	if (ibase(leaf) + at < key_limit) {
+		*(inum_t *)data = ibase(leaf) + at;
+		return 1;
+	}
+
+	return 0;
+}

@@ -869,6 +869,11 @@ tuxkey_t cursor_next_key(struct cursor *cursor);
 tuxkey_t cursor_this_key(struct cursor *cursor);
 int cursor_advance(struct cursor *cursor);
 int btree_probe(struct cursor *cursor, tuxkey_t key);
+typedef int (*btree_traverse_func_t)(struct btree *btree, tuxkey_t key_bottom,
+				     tuxkey_t key_limit, void *leaf,
+				     tuxkey_t key, u64 len, void *data);
+int btree_traverse(struct cursor *cursor, tuxkey_t key, u64 len,
+		   btree_traverse_func_t func, void *data);
 int btree_chop(struct btree *btree, tuxkey_t start, u64 len);
 int btree_insert_leaf(struct cursor *cursor, tuxkey_t key, struct buffer_head *leafbuf);
 void *btree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize);
@@ -942,7 +947,9 @@ extern struct ileaf_attr_ops iattr_ops;
 
 /* ileaf.c */
 void *ileaf_lookup(struct btree *btree, inum_t inum, struct ileaf *leaf, unsigned *result);
-inum_t find_empty_inode(struct btree *btree, struct ileaf *leaf, inum_t goal);
+int ileaf_find_free(struct btree *btree, tuxkey_t key_bottom,
+		    tuxkey_t key_limit, void *leaf,
+		    tuxkey_t key, u64 len, void *data);
 int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
 		    int (*func)(struct btree *, inum_t, void *, u16, void *),
 		    void *func_data);
