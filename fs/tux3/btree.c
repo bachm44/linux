@@ -842,6 +842,32 @@ int free_empty_btree(struct btree *btree)
 	return 0;
 }
 
+int replay_bnode_redirect(struct sb *sb, block_t oldblock, block_t newblock)
+{
+	struct buffer_head *newbuf, *oldbuf;
+	int err = 0;
+
+	newbuf = vol_getblk(sb, newblock);
+	if (IS_ERR(newbuf)) {
+		err = PTR_ERR(newbuf);
+		goto error;
+	}
+	oldbuf = vol_bread(sb, oldblock);
+	if (IS_ERR(oldbuf)) {
+		err = PTR_ERR(oldbuf);
+		goto error_put_newbuf;
+	}
+
+	memcpy(bufdata(newbuf), bufdata(oldbuf), bufsize(newbuf));
+	mark_buffer_rollup_atomic(newbuf);
+
+	blockput(oldbuf);
+error_put_newbuf:
+	blockput(newbuf);
+error:
+	return err;
+}
+
 int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 		      block_t left, block_t right, tuxkey_t rkey)
 {
@@ -861,6 +887,34 @@ int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 
 	mark_buffer_rollup_atomic(rootbuf);
 	blockput(rootbuf);
+
+	return 0;
+}
+
+/*
+ * Before this replay, replay should already dirty the buffer of parent.
+ * (e.g. by redirect)
+ */
+int replay_bnode_update(struct sb *sb, block_t parent, block_t child, tuxkey_t key)
+{
+	struct buffer_head *parentbuf;
+
+	parentbuf = vol_getblk(sb, parent);
+	if (IS_ERR(parentbuf))
+		return PTR_ERR(parentbuf);
+
+	struct bnode *bnode = bufdata(parentbuf);
+	struct index_entry *entry = bnode->entries, *top = entry + bcount(bnode);
+	while (entry < top) { /* binary search goes here */
+		if (from_be_u64(entry->key) == key)
+			break;
+		entry++;
+	}
+	assert(entry < top);
+
+	entry->block = to_be_u64(child);
+	mark_buffer_rollup_non(parentbuf);
+	blockput(parentbuf);
 
 	return 0;
 }

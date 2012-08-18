@@ -8,19 +8,7 @@
 #define trace trace_on
 #endif
 
-static unsigned logsize[LOG_TYPES] = {
-	[LOG_BALLOC] = 8,
-	[LOG_BFREE] = 8,
-	[LOG_BFREE_ON_ROLLUP] = 8,
-	[LOG_LEAF_REDIRECT] = 13,
-	[LOG_BNODE_REDIRECT] = 13,
-	[LOG_BNODE_ROOT] = 26,
-	[LOG_BNODE_SPLIT] = 15,
-	[LOG_BNODE_ADD] = 19,
-	[LOG_BNODE_UPDATE] = 19,
-};
-
-static const char *log_name[LOG_TYPES] = {
+static const char *log_name[] = {
 #define X(x)	[x] = #x
 	X(LOG_BALLOC),
 	X(LOG_BFREE),
@@ -34,33 +22,64 @@ static const char *log_name[LOG_TYPES] = {
 #undef X
 };
 
+/* Load log blocks and pin. */
 static int replay_load_logblocks(struct sb *sb)
 {
 	block_t logchain = sb->logchain;
-	unsigned logcount = from_be_u32(sb->super.logcount);
+	unsigned j, i = from_be_u32(sb->super.logcount);
+	struct buffer_head *buffer;
+	int err;
 
-	/* Load log blocks */
-	trace("load %u logblocks", logcount);
-	for (int i = logcount; i-- > 0;) {
-		struct buffer_head *buffer = blockget(mapping(sb->logmap), i);
-		if (!buffer)
-			return -ENOMEM;
-		int err = blockio(0, buffer, logchain);
+	trace("load %u logblocks", i);
+	while (i-- > 0) {
+		buffer = blockget(mapping(sb->logmap), i);
+		if (!buffer) {
+			err = -ENOMEM;
+			goto error;
+		}
+		err = blockio(0, buffer, logchain);
 		if (err) {
 			blockput(buffer);
-			return err;
+			goto error;
 		}
+
 		struct logblock *log = bufdata(buffer);
 		if (log->magic != to_be_u16(TUX3_MAGIC_LOG)) {
 			warn("bad log magic %x", from_be_u16(log->magic));
 			blockput(buffer);
-			return -EINVAL;
+			err = -EINVAL;
+			goto error;
 		}
 		logchain = from_be_u64(log->logchain);
-		blockput(buffer);
 	}
 
 	return 0;
+
+error:
+	j = from_be_u32(sb->super.logcount);
+	while (--j > i) {
+		buffer = blockget(mapping(sb->logmap), j);
+		assert(buffer != NULL);
+		blockput(buffer);
+		blockput(buffer);
+	}
+	return err;
+}
+
+/* Unpin log blocks, and prepare for future logging. */
+static void replay_unload_logblocks(struct sb *sb)
+{
+	unsigned i = from_be_u32(sb->super.logcount);
+
+	while (i-- > 0) {
+		struct buffer_head *buffer = blockget(mapping(sb->logmap), i);
+		assert(buffer != NULL);
+		blockput(buffer);
+		blockput(buffer);
+	}
+
+	/* Update for future logblock position */
+	sb->logthis = sb->lognext = from_be_u32(sb->super.logcount);
 }
 
 typedef int (*replay_log_func_t)(struct sb *, struct logblock *, block_t);
@@ -71,10 +90,12 @@ static int replay_log_stage1(struct sb *sb, struct logblock *log, block_t blknr)
 	unsigned char *data = log->data;
 	int err;
 
+	/* Check whether array is uptodate */
+	BUILD_BUG_ON(ARRAY_SIZE(log_name) != LOG_TYPES);
+
 	while (data < log->data + from_be_u16(log->bytes)) {
 		u8 code = *data++;
 		switch (code) {
-		case LOG_LEAF_REDIRECT:
 		case LOG_BNODE_REDIRECT:
 		{
 			u64 oldblock, newblock;
@@ -82,6 +103,9 @@ static int replay_log_stage1(struct sb *sb, struct logblock *log, block_t blknr)
 			data = decode48(data, &newblock);
 			trace("%s: oldblock %Lx, newblock %Lx",
 			      log_name[code], (L)oldblock, (L)newblock);
+			err = replay_bnode_redirect(sb, oldblock, newblock);
+			if (err)
+				return err;
 			break;
 		}
 		case LOG_BNODE_ROOT:
@@ -121,12 +145,17 @@ static int replay_log_stage1(struct sb *sb, struct logblock *log, block_t blknr)
 			data = decode48(data, &key);
 			trace("%s: parent 0x%Lx, child 0x%Lx, key 0x%Lx",
 			      log_name[code], (L)parent, (L)child, (L)key);
+			if (code == LOG_BNODE_UPDATE)
+				err = replay_bnode_update(sb, parent, child, key);
+			if (err)
+				return err;
 			break;
 		}
 		case LOG_BALLOC:
 		case LOG_BFREE:
 		case LOG_BFREE_ON_ROLLUP:
-			data += logsize[code] - sizeof(code);
+		case LOG_LEAF_REDIRECT:
+			data += log_size[code] - sizeof(code);
 			break;
 		default:
 			warn("unrecognized log code 0x%x", code);
@@ -170,6 +199,27 @@ static int replay_log_stage2(struct sb *sb, struct logblock *log, block_t blknr)
 				return err;
 			break;
 		}
+		case LOG_LEAF_REDIRECT:
+		case LOG_BNODE_REDIRECT:
+		{
+			u64 oldblock, newblock;
+			data = decode48(data, &oldblock);
+			data = decode48(data, &newblock);
+			trace("%s: oldblock %Lx, newblock %Lx",
+			      log_name[code], (L)oldblock, (L)newblock);
+			err = replay_update_bitmap(sb, newblock, 1, 1);
+			if (err)
+				return err;
+			if (code == LOG_LEAF_REDIRECT) {
+				err = replay_update_bitmap(sb, oldblock, 1, 0);
+				if (err)
+					return err;
+			} else {
+				/* newblock is not flushing yet */
+				defer_bfree(&sb->derollup, oldblock, 1);
+			}
+			break;
+		}
 		case LOG_BNODE_ROOT:
 		{
 			u64 root, left, right, rkey;
@@ -187,12 +237,10 @@ static int replay_log_stage2(struct sb *sb, struct logblock *log, block_t blknr)
 				return err;
 			break;
 		}
-		case LOG_LEAF_REDIRECT:
-		case LOG_BNODE_REDIRECT:
 		case LOG_BNODE_SPLIT:
 		case LOG_BNODE_ADD:
 		case LOG_BNODE_UPDATE:
-			data += logsize[code] - sizeof(code);
+			data += log_size[code] - sizeof(code);
 			break;
 		default:
 			warn("unrecognized log code 0x%x", code);
@@ -249,16 +297,18 @@ out:
 
 int replay_stage1(struct sb *sb)
 {
-	int err;
-
-	err = replay_load_logblocks(sb);
-	if (err)
-		return err;
-
-	return replay_logblocks(sb, replay_log_stage1);
+	int err = replay_load_logblocks(sb);
+	if (!err) {
+		err = replay_logblocks(sb, replay_log_stage1);
+		if (err)
+			replay_unload_logblocks(sb);
+	}
+	return err;
 }
 
 int replay_stage2(struct sb *sb)
 {
-	return replay_logblocks(sb, replay_log_stage2);
+	int err = replay_logblocks(sb, replay_log_stage2);
+	replay_unload_logblocks(sb);
+	return err;
 }

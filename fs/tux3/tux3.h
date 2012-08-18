@@ -822,8 +822,10 @@ void *tree_expand(struct cursor *cursor, tuxkey_t key, unsigned newsize);
 void show_tree_range(struct btree *btree, tuxkey_t start, unsigned count);
 void show_tree(struct btree *btree);
 int cursor_redirect(struct cursor *cursor);
+int replay_bnode_redirect(struct sb *sb, block_t oldblock, block_t newblock);
 int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 		      block_t left, block_t right, tuxkey_t rkey);
+int replay_bnode_update(struct sb *sb, block_t parent, block_t child, tuxkey_t key);
 
 /* commit.c */
 extern int (*reserve_blocks_callback)(struct sb *sb);
@@ -884,6 +886,7 @@ struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
 
 /* log.c */
+extern unsigned log_size[];
 void log_next(struct sb *sb);
 void log_drop(struct sb *sb);
 void log_finish(struct sb *sb);
@@ -898,8 +901,6 @@ void log_bnode_split(struct sb *sb, block_t src, unsigned pos, block_t dest);
 void log_bnode_add(struct sb *sb, block_t parent, block_t child, tuxkey_t key);
 void log_bnode_update(struct sb *sb, block_t parent, block_t child,
 		      tuxkey_t key);
-void log_droot(struct sb *sb, block_t newroot, block_t oldroot, tuxkey_t key);
-void log_iroot(struct sb *sb, block_t newroot, block_t oldroot);
 
 int stash_value(struct stash *stash, u64 value);
 int unstash(struct sb *sb, struct stash *defree, unstash_t actor);
