@@ -245,6 +245,7 @@ struct sb {
 	struct list_head alloc_inodes;	/* deferred inum allocation inodes */
 	spinlock_t dirty_inodes_lock;
 	struct list_head dirty_inodes;	/* dirty inodes list */
+	struct iowait *iowait;		/* helper for waiting I/O */
 #ifdef __KERNEL__
 	struct super_block *vfs_sb; /* Generic kernel superblock */
 #else
@@ -617,17 +618,12 @@ static inline struct inode *buffer_inode(struct buffer_head *buffer)
 	return buffer->b_page->mapping->host;
 }
 
+/* Get logical index of buffer */
 static inline block_t bufindex(struct buffer_head *buffer)
 {
-	/*
-	 * We don't guarantee the buffer is buffer_mapped(), so we
-	 * calc it from page->index.
-	 */
 	struct inode *inode = buffer_inode(buffer);
 	struct page *page = buffer->b_page;
-	/* FIXME: replay is unnecessary to use bufindex. remove those */
-	assert(inode == tux_sb(inode->i_sb)->volmap ||
-	       inode == tux_sb(inode->i_sb)->logmap);
+
 	return (page_offset(page) + bh_offset(buffer)) >> inode->i_blkbits;
 }
 
