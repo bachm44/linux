@@ -690,8 +690,6 @@ struct delete_info {
 	int create;
 };
 
-typedef int (*unstash_t)(struct sb *sb, u64 val);
-
 /* Redirect ptr which is pointing data of src from src to dst */
 static inline void *ptr_redirect(void *ptr, void *src, void *dst)
 {
@@ -842,6 +840,7 @@ int replay_bnode_root(struct sb *sb, block_t root, unsigned count,
 int replay_bnode_update(struct sb *sb, block_t parent, block_t child, tuxkey_t key);
 
 /* commit.c */
+void setup_sb(struct sb *sb, struct disksuper *super);
 int load_sb(struct sb *sb);
 int save_sb(struct sb *sb);
 int load_itable(struct sb *sb);
@@ -922,6 +921,8 @@ void log_freeblocks(struct sb *sb, block_t freeblocks);
 void log_delta(struct sb *sb);
 void log_rollup(struct sb *sb);
 
+typedef int (*unstash_t)(struct sb *sb, u64 val);
+void stash_init(struct stash *stash);
 int stash_value(struct stash *stash, u64 value);
 int unstash(struct sb *sb, struct stash *defree, unstash_t actor);
 int defer_bfree(struct stash *defree, block_t block, unsigned count);

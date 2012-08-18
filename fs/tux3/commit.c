@@ -9,15 +9,19 @@
 #define trace trace_on
 #endif
 
-int load_sb(struct sb *sb)
+void setup_sb(struct sb *sb, struct disksuper *super)
 {
-	struct disksuper *super = &sb->super;
-	int err = devio(READ, sb_dev(sb), SB_LOC, super, SB_LEN);
+	init_rwsem(&sb->delta_lock);
+	mutex_init(&sb->loglock);
+	INIT_LIST_HEAD(&sb->alloc_inodes);
+#ifndef __KERNEL__
+	INIT_LIST_HEAD(&sb->dirty_inodes);
+#endif
+	INIT_LIST_HEAD(&sb->commit);
+	INIT_LIST_HEAD(&sb->pinned);
+	stash_init(&sb->defree);
+	stash_init(&sb->derollup);
 
-	if (err)
-		return err;
-	if (memcmp(super->magic, TUX3_MAGIC, sizeof(super->magic)))
-		return -EINVAL;
 	sb->blockbits = from_be_u16(super->blockbits);
 	sb->blocksize = 1 << sb->blockbits;
 	sb->blockmask = (1 << sb->blockbits) - 1;
@@ -45,6 +49,20 @@ int load_sb(struct sb *sb)
 	trace("freeatom %u, atomgen %u", sb->freeatom, sb->atomgen);
 	trace("dictsize %Lu", (L)sb->dictsize);
 	trace("logchain %Lu", (L)sb->logchain);
+}
+
+int load_sb(struct sb *sb)
+{
+	struct disksuper *super = &sb->super;
+	int err;
+
+	err = devio(READ, sb_dev(sb), SB_LOC, super, SB_LEN);
+	if (err)
+		return err;
+	if (memcmp(super->magic, TUX3_MAGIC, sizeof(super->magic)))
+		return -EINVAL;
+
+	setup_sb(sb, super);
 	return 0;
 }
 
