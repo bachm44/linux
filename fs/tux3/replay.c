@@ -13,6 +13,7 @@ static const char *log_name[] = {
 	X(LOG_BALLOC),
 	X(LOG_BFREE),
 	X(LOG_BFREE_ON_ROLLUP),
+	X(LOG_BFREE_RELOG),
 	X(LOG_LEAF_REDIRECT),
 	X(LOG_BNODE_REDIRECT),
 	X(LOG_BNODE_ROOT),
@@ -143,6 +144,12 @@ static int replay_log_stage1(struct sb *sb, struct buffer_head *logbuf,
 	/* Check whether array is uptodate */
 	BUILD_BUG_ON(ARRAY_SIZE(log_name) != LOG_TYPES);
 
+	/* If log is before latest rollup, those were already applied to FS. */
+	if (bufindex(logbuf) < info->rollup_index)
+		return 0;
+	if (bufindex(logbuf) == info->rollup_index)
+		data = info->rollup_pos;
+
 	while (data < log->data + from_be_u16(log->bytes)) {
 		u8 code = *data++;
 		switch (code) {
@@ -204,6 +211,7 @@ static int replay_log_stage1(struct sb *sb, struct buffer_head *logbuf,
 		case LOG_BALLOC:
 		case LOG_BFREE:
 		case LOG_BFREE_ON_ROLLUP:
+		case LOG_BFREE_RELOG:
 		case LOG_LEAF_REDIRECT:
 		case LOG_ROLLUP:
 		case LOG_DELTA:
@@ -227,6 +235,12 @@ static int replay_log_stage2(struct sb *sb, struct buffer_head *logbuf,
 	unsigned char *data = log->data;
 	int err;
 
+	/* If log is before latest rollup, those were already applied to FS. */
+	if (bufindex(logbuf) < info->rollup_index)
+		return 0;
+	if (bufindex(logbuf) == info->rollup_index)
+		data = info->rollup_pos;
+
 	/* log block address itself works as balloc log */
 	trace("LOG BLOCK: logblock %Lx", (L)blocknr);
 	err = replay_update_bitmap(sb, blocknr, 1, 1);
@@ -241,6 +255,7 @@ static int replay_log_stage2(struct sb *sb, struct buffer_head *logbuf,
 		case LOG_BALLOC:
 		case LOG_BFREE:
 		case LOG_BFREE_ON_ROLLUP:
+		case LOG_BFREE_RELOG:
 		{
 			u64 block;
 			u8 count;
