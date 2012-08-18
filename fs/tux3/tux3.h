@@ -13,9 +13,9 @@
 #include <linux/magic.h>
 #include <linux/slab.h>
 
-#define printf		printk
-#define vprintf		vprintk
-#define die(code)	BUG_ON(1)
+#define printf(fmt, args...)	printk(fmt , ##args)
+#define vprintf(fmt, args...)	vprintk(fmt , ##args)
+#define die(code)		BUG_ON(1)
 
 #include "trace.h"
 
@@ -896,6 +896,9 @@ void replay_iput_orphan_inodes(struct sb *sb,
 			       struct list_head *orphan_in_otable,
 			       int destroy);
 int replay_load_orphan_inodes(struct replay *rp);
+
+/* super.c */
+struct replay *tux3_init_fs(struct sb *sbi);
 
 /* replay.c */
 struct replay *replay_stage1(struct sb *sb);
