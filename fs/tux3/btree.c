@@ -704,7 +704,6 @@ int btree_chop(struct btree *btree, tuxkey_t start, u64 len)
 	/* Chop all range if len >= TUXKEY_LIMIT */
 	limit = (len >= TUXKEY_LIMIT) ? TUXKEY_LIMIT : start + len;
 
-	cursor = alloc_cursor(btree, 0);
 	prev = malloc(sizeof(*prev) * btree->root.depth);
 	if (prev == NULL)
 		return -ENOMEM;
@@ -712,13 +711,21 @@ int btree_chop(struct btree *btree, tuxkey_t start, u64 len)
 
 	cii = malloc(sizeof(*cii) * btree->root.depth);
 	if (cii == NULL) {
-		free(prev);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto error_cii;
 	}
 	memset(cii, 0, sizeof(*cii) * btree->root.depth);
 
+	cursor = alloc_cursor(btree, 0);
+	if (!cursor) {
+		ret = -ENOMEM;
+		goto error_alloc_cursor;
+	}
+
 	down_write(&btree->lock);
-	btree_probe(cursor, start);
+	ret = btree_probe(cursor, start);
+	if (ret)
+		goto error_btree_probe;
 
 	/* Walk leaves */
 	while (1) {
@@ -830,13 +837,15 @@ out:
 		if (prev[i])
 			blockput(prev[i]);
 	}
-	free(prev);
-	free(cii);
 	release_cursor(cursor);
-
+error_btree_probe:
 	up_write(&btree->lock);
 
 	free_cursor(cursor);
+error_alloc_cursor:
+	free(cii);
+error_cii:
+	free(prev);
 
 	return ret;
 }
@@ -1173,29 +1182,29 @@ error:
 }
 
 /*
- * Before this replay, replay should already dirty the buffer of parent.
+ * Before this replay, replay should already dirty the buffer of bnodeblock.
  * (e.g. by redirect)
  */
-static int replay_bnode_change(struct sb *sb, block_t parent, block_t child,
-			tuxkey_t key,
-			void (*change)(struct bnode *, block_t, tuxkey_t))
+static int replay_bnode_change(struct sb *sb, block_t bnodeblock,
+			       u64 val1, u64 val2,
+			       void (*change)(struct bnode *, u64, u64))
 {
-	struct buffer_head *parentbuf;
+	struct buffer_head *bnodebuf;
 
-	parentbuf = vol_getblk(sb, parent);
-	if (IS_ERR(parentbuf))
-		return PTR_ERR(parentbuf);
+	bnodebuf = vol_getblk(sb, bnodeblock);
+	if (IS_ERR(bnodebuf))
+		return PTR_ERR(bnodebuf);
 
-	struct bnode *bnode = bufdata(parentbuf);
-	change(bnode, child, key);
+	struct bnode *bnode = bufdata(bnodebuf);
+	change(bnode, val1, val2);
 
-	mark_buffer_rollup_non(parentbuf);
-	blockput(parentbuf);
+	mark_buffer_rollup_non(bnodebuf);
+	blockput(bnodebuf);
 
 	return 0;
 }
 
-static void add_func(struct bnode *bnode, block_t child, tuxkey_t key)
+static void add_func(struct bnode *bnode, u64 child, u64 key)
 {
 	struct index_entry *entry = bnode_lookup(bnode, key) + 1;
 	bnode_add_index(bnode, entry, child, key);
@@ -1206,7 +1215,7 @@ int replay_bnode_add(struct sb *sb, block_t parent, block_t child, tuxkey_t key)
 	return replay_bnode_change(sb, parent, child, key, add_func);
 }
 
-static void update_func(struct bnode *bnode, block_t child, tuxkey_t key)
+static void update_func(struct bnode *bnode, u64 child, u64 key)
 {
 	struct index_entry *entry = bnode_lookup(bnode, key);
 	assert(from_be_u64(entry->key) == key);
@@ -1216,4 +1225,57 @@ static void update_func(struct bnode *bnode, block_t child, tuxkey_t key)
 int replay_bnode_update(struct sb *sb, block_t parent, block_t child, tuxkey_t key)
 {
 	return replay_bnode_change(sb, parent, child, key, update_func);
+}
+
+int replay_bnode_merge(struct sb *sb, block_t src, block_t dst)
+{
+	struct buffer_head *srcbuf, *dstbuf;
+	int err = 0;
+
+	srcbuf = vol_getblk(sb, src);
+	if (IS_ERR(srcbuf)) {
+		err = -ENOMEM;
+		goto error;
+	}
+
+	dstbuf = vol_getblk(sb, dst);
+	if (IS_ERR(dstbuf)) {
+		err = -ENOMEM;
+		goto error_put_srcbuf;
+	}
+
+	bnode_merge_nodes(bufdata(dstbuf), bufdata(srcbuf));
+
+	mark_buffer_rollup_non(dstbuf);
+	mark_buffer_rollup_non(srcbuf);
+
+	blockput(dstbuf);
+error_put_srcbuf:
+	blockput(srcbuf);
+error:
+	return err;
+}
+
+static void del_func(struct bnode *bnode, u64 key, u64 count)
+{
+	struct index_entry *entry = bnode_lookup(bnode, key);
+	assert(from_be_u64(entry->key) == key);
+	bnode_remove_index(bnode, entry, count);
+}
+
+int replay_bnode_del(struct sb *sb, block_t bnode, tuxkey_t key, unsigned count)
+{
+	return replay_bnode_change(sb, bnode, key, count, del_func);
+}
+
+static void adjust_func(struct bnode *bnode, u64 from, u64 to)
+{
+	struct index_entry *entry = bnode_lookup(bnode, from);
+	assert(from_be_u64(entry->key) == from);
+	entry->key = to_be_u64(to);
+}
+
+int replay_bnode_adjust(struct sb *sb, block_t bnode, tuxkey_t from, tuxkey_t to)
+{
+	return replay_bnode_change(sb, bnode, from, to, adjust_func);
 }
