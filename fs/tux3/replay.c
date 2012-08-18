@@ -204,12 +204,15 @@ static int replay_log_stage1(struct sb *sb, struct buffer_head *logbuf,
 		case LOG_BNODE_SPLIT:
 		{
 			unsigned pos;
-			u64 src, dest;
+			u64 src, dst;
 			data = decode16(data, &pos);
 			data = decode48(data, &src);
-			data = decode48(data, &dest);
-			trace("%s: pos %x, src %Lx, dest %Lx",
-			      log_name[code], pos, (L)src, (L)dest);
+			data = decode48(data, &dst);
+			trace("%s: pos %x, src %Lx, dst %Lx",
+			      log_name[code], pos, (L)src, (L)dst);
+			err = replay_bnode_split(sb, src, pos, dst);
+			if (err)
+				return err;
 			break;
 		}
 		case LOG_BNODE_ADD:
@@ -223,6 +226,8 @@ static int replay_log_stage1(struct sb *sb, struct buffer_head *logbuf,
 			      log_name[code], (L)parent, (L)child, (L)key);
 			if (code == LOG_BNODE_UPDATE)
 				err = replay_bnode_update(sb, parent, child, key);
+			else
+				err = replay_bnode_add(sb, parent, child, key);
 			if (err)
 				return err;
 			break;
@@ -327,6 +332,20 @@ static int replay_log_stage2(struct sb *sb, struct buffer_head *logbuf,
 				return err;
 			break;
 		}
+		case LOG_BNODE_SPLIT:
+		{
+			unsigned pos;
+			u64 src, dst;
+			data = decode16(data, &pos);
+			data = decode48(data, &src);
+			data = decode48(data, &dst);
+			trace("%s: pos %x, src %Lx, dst %Lx",
+			      log_name[code], pos, (L)src, (L)dst);
+			err = replay_update_bitmap(sb, dst, 1, 1);
+			if (err)
+				return err;
+			break;
+		}
 		case LOG_FREEBLOCKS:
 		{
 			u64 freeblocks;
@@ -336,7 +355,6 @@ static int replay_log_stage2(struct sb *sb, struct buffer_head *logbuf,
 			sb->freeblocks = freeblocks;
 			break;
 		}
-		case LOG_BNODE_SPLIT:
 		case LOG_BNODE_ADD:
 		case LOG_BNODE_UPDATE:
 		case LOG_ROLLUP:
