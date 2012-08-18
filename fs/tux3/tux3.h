@@ -696,7 +696,9 @@ static inline struct ileaf *to_ileaf(vleaf *leaf)
 struct replay {
 	struct sb *sb;
 
-	/* For others of replay.c */
+	/* For orphan.c */
+	struct list_head log_orphan_add;   /* To remember LOG_ORPHAN_ADD */
+	struct list_head orphan_in_otable; /* Orphan inodes in sb->otable */
 
 	/* For replay.c */
 	void *rollup_pos;	/* position of rollup log in a log block */
@@ -920,6 +922,9 @@ void *decode_attrs(struct inode *inode, void *attrs, unsigned size);
 /* ileaf.c */
 void *ileaf_lookup(struct btree *btree, inum_t inum, struct ileaf *leaf, unsigned *result);
 inum_t find_empty_inode(struct btree *btree, struct ileaf *leaf, inum_t goal);
+int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
+		    int (*func)(struct btree *, inum_t, void *),
+		    void *func_data);
 void ileaf_purge(struct btree *btree, inum_t inum, struct ileaf *leaf);
 extern struct btree_ops itable_ops;
 
@@ -970,10 +975,18 @@ void destroy_defer_bfree(struct stash *defree);
 int tux3_rollup_orphan_add(struct sb *sb, struct list_head *orphan_add);
 int tux3_mark_inode_orphan(struct inode *inode);
 int tux3_clear_inode_orphan(struct inode *inode);
+void clean_orphan_list(struct list_head *head);
+int replay_orphan_add(struct replay *rp, unsigned version, inum_t inum);
+int replay_orphan_del(struct replay *rp, unsigned version, inum_t inum);
+void replay_iput_orphan_inodes(struct sb *sb,
+			       struct list_head *orphan_in_otable,
+			       int destroy);
+int replay_load_orphan_inodes(struct replay *rp);
 
 /* replay.c */
 struct replay *replay_stage1(struct sb *sb);
 int replay_stage2(struct replay *rp);
+int replay_stage3(struct replay *rp, int apply);
 
 /* utility.c */
 void hexdump(void *data, unsigned size);

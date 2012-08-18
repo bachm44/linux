@@ -46,11 +46,16 @@ static struct replay *alloc_replay(struct sb *sb, unsigned logcount)
 	rp->rollup_index = -1;
 	memset(rp->blocknrs, 0, logcount * sizeof(block_t));
 
+	INIT_LIST_HEAD(&rp->log_orphan_add);
+	INIT_LIST_HEAD(&rp->orphan_in_otable);
+
 	return rp;
 }
 
 static void free_replay(struct replay *rp)
 {
+	assert(list_empty(&rp->log_orphan_add));
+	assert(list_empty(&rp->orphan_in_otable));
 	free(rp);
 }
 
@@ -153,7 +158,9 @@ static void replay_done(struct replay *rp)
 {
 	struct sb *sb = rp->sb;
 
+	clean_orphan_list(&rp->log_orphan_add);	/* for error path */
 	free_replay(rp);
+
 	sb->lognext = from_be_u32(sb->super.logcount);
 	log_finish_cycle(sb);
 }
@@ -424,6 +431,23 @@ static int replay_log_stage2(struct replay *rp, struct buffer_head *logbuf)
 			blockput_free(vol_find_get_block(sb, src));
 			break;
 		}
+		case LOG_ORPHAN_ADD:
+		case LOG_ORPHAN_DEL:
+		{
+			unsigned version;
+			u64 inum;
+			data = decode16(data, &version);
+			data = decode48(data, &inum);
+			trace("%s: version 0x%x, inum 0x%Lx",
+			      log_name[code], version, (L)inum);
+			if (code == LOG_ORPHAN_ADD)
+				err = replay_orphan_add(rp, version, inum);
+			else
+				err = replay_orphan_del(rp, version, inum);
+			if (err)
+				return err;
+			break;
+		}
 		case LOG_FREEBLOCKS:
 		{
 			u64 freeblocks;
@@ -437,8 +461,6 @@ static int replay_log_stage2(struct replay *rp, struct buffer_head *logbuf)
 		case LOG_BNODE_UPDATE:
 		case LOG_BNODE_DEL:
 		case LOG_BNODE_ADJUST:
-		case LOG_ORPHAN_ADD:
-		case LOG_ORPHAN_DEL:
 		case LOG_ROLLUP:
 		case LOG_DELTA:
 			data += log_size[code] - sizeof(code);
@@ -501,6 +523,39 @@ struct replay *replay_stage1(struct sb *sb)
 int replay_stage2(struct replay *rp)
 {
 	int err = replay_logblocks(rp, replay_log_stage2);
+	if (err)
+		goto error;
+
+	/*
+	 * Load orphan inodes into sb->orphan_add to decide what to do
+	 * by caller.
+	 */
+	err = replay_load_orphan_inodes(rp);
+	if (err)
+		goto error;
+
+	return 0;
+
+error:
 	replay_done(rp);
+
 	return err;
+}
+
+/*
+ * Replay pending frontend request like orphan, etc. I.e. this starts
+ * to modify FS.
+ */
+int replay_stage3(struct replay *rp, int apply)
+{
+	struct sb *sb = rp->sb;
+	LIST_HEAD(orphan_in_otable);
+
+	list_splice_init(&rp->orphan_in_otable, &orphan_in_otable);
+	replay_done(rp);
+	/* Start logging after replay_done() */
+
+	replay_iput_orphan_inodes(sb, &orphan_in_otable, apply);
+
+	return 0;
 }
