@@ -158,12 +158,13 @@ static inline void *decode48(void *at, u64 *val)
 
 /* Special inode numbers */
 #define TUX_BITMAP_INO		0
-#define TUX_VOLMAP_INO		1	/* FIXME: reserve this */
-#define TUX_VTABLE_INO		2
-#define TUX_INVALID_INO		3	/* FIXME: reserve this */
-#define TUX_LOGMAP_INO		4	/* FIXME: reserve this */
-#define TUX_ATABLE_INO		10
-#define TUX_ROOTDIR_INO		13
+#define TUX_VTABLE_INO		1
+#define TUX_ATABLE_INO		2
+#define TUX_ROOTDIR_INO		3
+#define TUX_VOLMAP_INO		61	/* This doesn't have entry in ileaf */
+#define TUX_LOGMAP_INO		62	/* FIXME: remove this */
+#define TUX_INVALID_INO		63	/* FIXME: just for debugging */
+#define TUX_NORMAL_INO		64	/* until this ino, reserved ino */
 
 struct disksuper {
 	/* Update magic on any incompatible format change */
@@ -950,9 +951,14 @@ void *ileaf_lookup(struct btree *btree, inum_t inum, struct ileaf *leaf, unsigne
 int ileaf_find_free(struct btree *btree, tuxkey_t key_bottom,
 		    tuxkey_t key_limit, void *leaf,
 		    tuxkey_t key, u64 len, void *data);
-int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
-		    int (*func)(struct btree *, inum_t, void *, u16, void *),
-		    void *func_data);
+struct ileaf_enumrate_cb {
+	int (*callback)(struct btree *btree, inum_t inum, void *attrs,
+			unsigned size, void *data);
+	void *data;
+};
+int ileaf_enumerate(struct btree *btree, tuxkey_t key_bottom,
+		    tuxkey_t key_limit, void *leaf,
+		    tuxkey_t key, u64 len, void *data);
 extern struct btree_ops itable_ops;
 extern struct btree_ops otable_ops;
 

@@ -144,6 +144,84 @@ void del_defer_alloc_inum(struct inode *inode)
  * we should only round down the split point, not the returned goal.)
  */
 
+static int find_free_inum(struct cursor *cursor, inum_t goal, inum_t *allocated)
+{
+	int ret;
+
+#ifndef __KERNEL__ /* FIXME: kill this, only mkfs path needs this */
+	/* If this is not mkfs path, it should have itable root */
+	if (!has_root(cursor->btree)) {
+		*allocated = goal;
+		return 0;
+	}
+#endif
+
+	ret = btree_probe(cursor, goal);
+	if (ret)
+		return ret;
+
+	/* FIXME: need better allocation policy */
+
+	/*
+	 * Find free inum from goal, and wrapped to TUX_NORMAL_INO if
+	 * not found. This prevent to use less than TUX_NORMAL_INO if
+	 * reserved ino was not specified explicitly.
+	 */
+	ret = btree_traverse(cursor, goal, TUXKEY_LIMIT, ileaf_find_free,
+			     allocated);
+	if (ret < 0)
+		goto out;
+	if (ret > 0) {
+		/* Found free inum */
+		ret = 0;
+		goto out;
+	}
+
+	if (TUX_NORMAL_INO < goal) {
+		u64 len = goal - TUX_NORMAL_INO;
+
+		ret = btree_traverse(cursor, TUX_NORMAL_INO, len,
+				     ileaf_find_free, allocated);
+		if (ret < 0)
+			goto out;
+		if (ret > 0) {
+			/* Found free inum */
+			ret = 0;
+			goto out;
+		}
+	}
+
+	/* Couldn't find free inum */
+	ret = -ENOSPC;
+
+out:
+	release_cursor(cursor);
+
+	return ret;
+}
+
+/*
+ * Choose preferable inode number
+ *
+ * For now the inum allocation goal is the same as the block allocation
+ * goal.  This allows a maximum inum density of one per block and should
+ * give pretty good spacial correlation between inode table blocks and
+ * file data belonging to those inodes provided somebody sets the block
+ * allocation goal based on the directory the file will be in.
+ *
+ * FIXME: better allocation algorithm?
+ */
+static inum_t alloc_inum_goal(struct inode *inode)
+{
+	struct sb *sb = tux_sb(inode->i_sb);
+	inum_t goal = sb->nextalloc;
+
+	/* Don't choose reserved ino */
+	if (goal < TUX_NORMAL_INO)
+		goal = TUX_NORMAL_INO;
+	return goal;
+}
+
 static int alloc_inum(struct inode *inode, inum_t goal)
 {
 	struct sb *sb = tux_sb(inode->i_sb);
@@ -156,46 +234,18 @@ static int alloc_inum(struct inode *inode, inum_t goal)
 		return -ENOMEM;
 
 	down_write(&cursor->btree->lock);
-retry:
-#ifndef __KERNEL__ /* FIXME: kill this, only mkfs path needs this */
-	/* If this is not mkfs path, it should have itable root */
-	if (!has_root(itable))
-		goto skip_itable;
-#endif
-	if ((err = btree_probe(cursor, goal)))
-		goto out;
-
-	/* FIXME: inum allocation should check min and max */
-	trace("create inode 0x%Lx", (L)goal);
-	assert(!tux_inode(inode)->btree.root.depth);
-	assert(goal < cursor_next_key(cursor));
 	while (1) {
-		trace_off("find empty inode in [%Lx] base %Lx", (L)bufindex(cursor_leafbuf(cursor)), (L)ibase(leaf));
-		goal = find_empty_inode(itable, bufdata(cursor_leafbuf(cursor)), goal);
-		trace("result inum is %Lx, limit is %Lx", (L)goal, (L)cursor_next_key(cursor));
-		if (goal < cursor_next_key(cursor))
+		err = find_free_inum(cursor, goal, &goal);
+		if (err)
+			goto error;
+
+		/* Is this inum already used by deferred inum allocation? */
+		if (!find_defer_alloc_inum(sb, goal))
 			break;
-		int more = cursor_advance(cursor);
-		if (more < 0) {
-			err = more;
-			goto release;
-		}
-		trace("no more inode space here, advance %i", more);
-		if (!more) {
-			err = -ENOSPC;
-			goto release;
-		}
-	}
-#ifndef __KERNEL__ /* FIXME: kill this, only mkfs path needs this */
-skip_itable:
-#endif
-	/* Is this inum already used by deferred inum allocation? */
-	if (find_defer_alloc_inum(sb, goal)) {
+
 		goal++;
 		while (find_defer_alloc_inum(sb, goal))
 			goal++;
-		release_cursor(cursor);
-		goto retry;
 	}
 
 	/* FIXME: should use conditional inode->present. But,
@@ -209,11 +259,10 @@ skip_itable:
 
 	add_defer_alloc_inum(inode);
 
-release:
-	release_cursor(cursor);
-out:
+error:
 	up_write(&cursor->btree->lock);
 	free_cursor(cursor);
+
 	return err;
 }
 
@@ -589,7 +638,6 @@ static void tux_setup_inode(struct inode *inode)
 		switch (inum) {
 		case TUX_VOLMAP_INO:
 		case TUX_BITMAP_INO:
-		/* FIXME: kill this, this means logmap for now */
 		case TUX_LOGMAP_INO:
 			gfp_mask &= ~__GFP_FS;
 			break;
@@ -617,7 +665,7 @@ struct inode *tux_create_inode(struct inode *dir, int mode, dev_t rdev)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
-	int err = alloc_inum(inode, tux_sb(dir->i_sb)->nextalloc);
+	int err = alloc_inum(inode, alloc_inum_goal(dir));
 	if (err) {
 		make_bad_inode(inode);
 		iput(inode);

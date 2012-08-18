@@ -292,34 +292,6 @@ static int ileaf_merge(struct btree *btree, void *vinto, void *vfrom)
 	return 1;
 }
 
-int ileaf_enum_inum(struct btree *btree, struct ileaf *ileaf,
-		    int (*func)(struct btree *, inum_t, void *, u16, void *),
-		    void *func_data)
-{
-	be_u16 *dict = ileaf_dict(btree, ileaf);
-	int at, offset;
-
-	offset = 0;
-	for (at = 0; at < icount(ileaf); at++) {
-		inum_t inum;
-		int err, limit, size;
-
-		limit = __atdict(dict, at + 1);
-		if (limit <= offset)
-			continue;
-		size = limit - offset;
-
-		inum = ibase(ileaf) + at;
-		err = func(btree, inum, ileaf->table + offset, size, func_data);
-		if (err)
-			return err;
-
-		offset = limit;
-	}
-
-	return 0;
-}
-
 /*
  * Chop inums
  * return value:
@@ -550,6 +522,47 @@ int ileaf_find_free(struct btree *btree, tuxkey_t key_bottom,
 	if (ibase(leaf) + at < key_limit) {
 		*(inum_t *)data = ibase(leaf) + at;
 		return 1;
+	}
+
+	return 0;
+}
+
+/*
+ * Enumerate inum
+ * (callback for btree_traverse())
+ */
+int ileaf_enumerate(struct btree *btree, tuxkey_t key_bottom,
+		    tuxkey_t key_limit, void *leaf,
+		    tuxkey_t key, u64 len, void *data)
+{
+	struct ileaf *ileaf = leaf;
+	be_u16 *dict = ileaf_dict(btree, ileaf);
+	struct ileaf_enumrate_cb *cb = data;
+	tuxkey_t base = ibase(ileaf);
+	unsigned at, count, offset;
+
+	at = key - base;
+	count = min_t(u64, key + len - base, icount(ileaf));
+
+	offset = atdict(dict, at);
+	for (; at < count; at++) {
+		unsigned size, limit;
+		inum_t inum;
+		void *attrs;
+		int err;
+
+		limit = __atdict(dict, at + 1);
+		if (limit <= offset)
+			continue;
+		attrs = ileaf->table + offset;
+		size = limit - offset;
+
+		inum = base + at;
+		err = cb->callback(btree, inum, attrs, size, cb->data);
+		if (err)
+			return err;
+
+		offset = limit;
 	}
 
 	return 0;
