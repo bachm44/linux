@@ -860,6 +860,7 @@ void dleaf_merge(struct btree *btree, vleaf *vinto, vleaf *vfrom);
 unsigned dleaf_need(struct btree *btree, vleaf *vleaf);
 extern struct btree_ops dtree_ops;
 
+void dwalk_redirect(struct dwalk *walk, struct dleaf *src, struct dleaf *dst);
 int dwalk_end(struct dwalk *walk);
 block_t dwalk_block(struct dwalk *walk);
 unsigned dwalk_count(struct dwalk *walk);
@@ -887,6 +888,7 @@ extern struct btree_ops itable_ops;
 /* inode.c */
 struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
+void del_defer_alloc_inum(struct inode *inode);
 
 /* log.c */
 extern unsigned log_size[];
