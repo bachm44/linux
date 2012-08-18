@@ -11,6 +11,7 @@
 #include <linux/bio.h>
 #include <linux/mutex.h>
 #include <linux/magic.h>
+#include <linux/slab.h>
 
 #define printf		printk
 #define vprintf		vprintk
@@ -210,6 +211,33 @@ struct stash { struct flink_head head; u64 *pos, *top; };
 
 /* Tux3-specific sb is a handle for the entire volume state */
 
+#ifdef __KERNEL__
+/* FIXME */
+#define DEFAULT_DIRTY_WHEN	0
+struct dirty_buffers {
+};
+
+/* Can we modify buffer from delta */
+static inline int buffer_can_modify(struct buffer_head *buffer, unsigned delta)
+{
+	return 1;
+}
+
+static inline void init_dirty_buffers(struct dirty_buffers *dirty)
+{
+}
+
+static inline int sync_inodes(struct sb *sb, unsigned delta)
+{
+	return 0;
+}
+
+static inline int blockio(int rw, struct buffer_head *buffer, block_t block)
+{
+	return 0;
+}
+#endif
+
 struct sb {
 	union {
 		struct disksuper super;
@@ -330,6 +358,11 @@ static inline tuxnode_t *tux_inode(struct inode *inode)
 	return container_of(inode, tuxnode_t, vfs_inode);
 }
 
+static inline struct inode *vfs_inode(tuxnode_t *tuxnode)
+{
+	return &tuxnode->vfs_inode;
+}
+
 static inline struct inode *btree_inode(struct btree *btree)
 {
 	return &container_of(btree, tuxnode_t, btree)->vfs_inode;
@@ -400,6 +433,11 @@ static inline struct sb *vfs_sb(struct sb *sb)
 }
 
 static inline struct inode *tux_inode(struct inode *inode)
+{
+	return inode;
+}
+
+static inline struct inode *vfs_inode(struct inode *inode)
 {
 	return inode;
 }
@@ -645,7 +683,8 @@ extern const struct address_space_operations tux_blk_aops;
 extern const struct address_space_operations tux_vol_aops;
 
 /* inode.c */
-int tux3_write_inode(struct inode *inode, int do_sync);
+void tux3_write_failed(struct address_space *mapping, loff_t to);
+int tux3_write_inode(struct inode *inode, struct writeback_control *wbc);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
 int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
@@ -661,12 +700,21 @@ int devio(int rw, struct block_device *dev, loff_t offset, void *data,
 	  unsigned len);
 
 /* temporary hack for buffer */
+struct buffer_head *peekblk(struct address_space *mapping, block_t iblock);
 struct buffer_head *blockread(struct address_space *mapping, block_t iblock);
 struct buffer_head *blockget(struct address_space *mapping, block_t iblock);
 
 static inline void blockput(struct buffer_head *buffer)
 {
 	put_bh(buffer);
+}
+
+static inline void blockput_free(struct buffer_head *buffer)
+{
+	/* Untested */
+	WARN_ON(1);
+	bforget(buffer);
+	blockput(buffer);
 }
 
 static inline int buffer_empty(struct buffer_head *buffer)
