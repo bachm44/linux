@@ -788,6 +788,9 @@ struct buffer_head *blockget(struct address_space *mapping, block_t iblock)
 	assert(page_has_buffers(page));
 
 	bh = find_get_buffer(page, offset);
+	/* Clear new, so the caller must initialize buffer. */
+	clear_buffer_new(bh);
+	/* FIXME: maybe, we shouldn't set uptodate unconditionally? */
 	set_buffer_uptodate(bh);
 
 	unlock_page(page);
@@ -807,13 +810,15 @@ static int tux3_readpages(struct file *file, struct address_space *mapping,
 	return mpage_readpages(mapping, pages, nr_pages, tux3_get_block);
 }
 
+#include "filemap_blocklib.c"
+
 static int tux3_da_write_begin(struct file *file, struct address_space *mapping,
 			       loff_t pos, unsigned len, unsigned flags,
 			       struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, flags, pagep,
+	ret = tux3_write_begin(mapping, pos, len, flags, pagep,
 				tux3_da_get_block);
 	if (ret < 0)
 		tux3_write_failed(mapping, pos + len);
@@ -826,7 +831,7 @@ static int tux3_da_write_end(struct file *file, struct address_space *mapping,
 {
 	int ret;
 
-	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+	ret = tux3_write_end(file, mapping, pos, len, copied, page, fsdata);
 	if (ret < len)
 		tux3_write_failed(mapping, pos + len);
 	return ret;
@@ -918,7 +923,7 @@ const struct address_space_operations tux_aops = {
 	.write_begin		= tux3_da_write_begin,
 	.write_end		= tux3_da_write_end,
 	.bmap			= tux3_bmap,
-//	.invalidatepage		= ext4_da_invalidatepage,
+	.invalidatepage		= tux3_invalidatepage,
 //	.releasepage		= ext4_releasepage,
 	.direct_IO		= tux3_direct_IO,
 	.migratepage		= buffer_migrate_page,
@@ -945,6 +950,7 @@ const struct address_space_operations tux_blk_aops = {
 	.writepages	= tux3_disable_writepages,
 	.write_begin	= tux3_da_write_begin,
 	.bmap		= tux3_bmap,
+	.invalidatepage	= tux3_invalidatepage,
 };
 
 static int tux3_vol_get_block(struct inode *inode, sector_t iblock,
@@ -975,8 +981,8 @@ static int tux3_vol_write_begin(struct file *file,
 				loff_t pos, unsigned len, unsigned flags,
 				struct page **pagep, void **fsdata)
 {
-	return block_write_begin(mapping, pos, len, flags, pagep,
-				 tux3_vol_get_block);
+	return tux3_write_begin(mapping, pos, len, flags, pagep,
+				tux3_vol_get_block);
 }
 
 const struct address_space_operations tux_vol_aops = {
@@ -985,5 +991,6 @@ const struct address_space_operations tux_vol_aops = {
 	.writepage	= tux3_disable_writepage,
 	.writepages	= tux3_disable_writepages,
 	.write_begin	= tux3_vol_write_begin,
+	.invalidatepage	= tux3_invalidatepage,
 };
 #endif /* __KERNEL__ */

@@ -5,6 +5,84 @@
  */
 
 #include "tux3.h"
+#ifdef __KERNEL__
+#include <linux/module.h>
+#include <linux/statfs.h>
+
+/* This will go to include/linux/magic.h */
+#ifndef TUX3_SUPER_MAGIC
+#define TUX3_SUPER_MAGIC	0x74757833
+#endif
+
+#define trace trace_on
+
+/* FIXME: this should be mount option? */
+int tux3_trace;
+module_param(tux3_trace, int, 0644);
+#endif
+
+#ifdef ATOMIC
+#ifdef __KERNEL__
+#define BUFFER_LINK	b_assoc_buffers
+#else
+#define BUFFER_LINK	link
+#endif
+static void cleanup_dirty_buffers(struct list_head *head)
+{
+	struct buffer_head *buffer, *n;
+
+	list_for_each_entry_safe(buffer, n, head, BUFFER_LINK) {
+		trace(">>> clean inum %Lx, buffer %Lx, count %d",
+		      tux_inode(buffer_inode(buffer))->inum,
+		      bufindex(buffer), bufcount(buffer));
+		assert(buffer_dirty(buffer));
+		tux3_clear_buffer_dirty(buffer);
+	}
+}
+
+static void cleanup_dirty_inode(struct inode *inode)
+{
+	if (!list_empty(&tux_inode(inode)->dirty_list)) {
+		trace(">>> clean inum %Lx, i_count %d, i_state %lx",
+		      tux_inode(inode)->inum, atomic_read(&inode->i_count),
+		      inode->i_state);
+		del_defer_alloc_inum(inode);
+		tux3_clear_dirty_inode(inode);
+	}
+}
+
+/*
+ * Some inode/buffers are always (re-)dirtied, so we have to cleanup
+ * those for umount.
+ */
+static void cleanup_dirty_for_umount(struct sb *sb)
+{
+	unsigned rollup = sb->rollup;
+
+	/*
+	 * Pinned buffer and bitmap are not flushing always, it is
+	 * normal. So, this clean those for unmount.
+	 */
+	if (sb->bitmap) {
+		struct dirty_buffers *dirty = inode_dirty_heads(sb->bitmap);
+		cleanup_dirty_buffers(dirty_head_when(dirty, rollup));
+		cleanup_dirty_inode(sb->bitmap);
+	}
+	cleanup_dirty_buffers(dirty_head_when(&sb->pinned, rollup));
+
+	/* orphan_add should be empty */
+	assert(list_empty(&sb->orphan_add));
+	/* Deferred orphan deletion request is not flushed for each delta  */
+	clean_orphan_list(&sb->orphan_del);
+
+	/* defree must be flushed for each delta */
+	assert(flink_empty(&sb->defree.head)||flink_is_last(&sb->defree.head));
+}
+#else /* !ATOMIC */
+static inline void cleanup_dirty_for_umount(struct sb *sb)
+{
+}
+#endif /* !ATOMIC */
 
 static void __tux3_put_super(struct sb *sbi)
 {
@@ -128,20 +206,6 @@ error:
 }
 
 #ifdef __KERNEL__
-#include <linux/module.h>
-#include <linux/statfs.h>
-
-/* This will go to include/linux/magic.h */
-#ifndef TUX3_SUPER_MAGIC
-#define TUX3_SUPER_MAGIC	0x74757833
-#endif
-
-#define trace trace_on
-
-/* FIXME: this should be mount option? */
-int tux3_trace;
-module_param(tux3_trace, int, 0644);
-
 static struct kmem_cache *tux_inode_cachep;
 
 static void tux3_inode_init_once(void *mem)
@@ -199,6 +263,7 @@ static void tux3_destroy_inode(struct inode *inode)
 	kmem_cache_free(tux_inode_cachep, tux_inode(inode));
 }
 
+#ifndef ATOMIC
 static void tux3_write_super(struct super_block *sb)
 {
 	lock_super(sb);
@@ -210,17 +275,26 @@ static void tux3_write_super(struct super_block *sb)
 	unlock_super(sb);
 }
 
+/* Just a glue to be called to write sb for non-atomic mode ->sync_fs(). */
+int force_delta(struct sb *sb)
+{
+	tux3_write_super(vfs_sb(sb)); /* FIXME: error handling */
+	return 0;
+}
+#endif
+
 static int tux3_sync_fs(struct super_block *sb, int wait)
 {
-	tux3_write_super(sb); /* FIXME: error handling */
-	return 0;
+	/* FIXME: We should support "wait" parameter. */
+	trace_on("wait (%u) parameter is unsupported for now", wait);
+	return force_delta(tux_sb(sb));
 }
 
 static void tux3_put_super(struct super_block *sb)
 {
 	struct sb *sbi = tux_sb(sb);
 
-	tux3_write_super(sb);
+	cleanup_dirty_for_umount(sbi);
 
 	__tux3_put_super(sbi);
 	sb->s_fs_info = NULL;
@@ -256,7 +330,9 @@ static const struct super_operations tux3_super_ops = {
 	.evict_inode	= tux3_evict_inode,
 	/* FIXME: we have to handle write_inode of sync (e.g. cache pressure) */
 //	.write_inode	= tux3_write_inode,
+#ifndef ATOMIC
 	.write_super	= tux3_write_super,
+#endif
 	.sync_fs	= tux3_sync_fs,
 	.put_super	= tux3_put_super,
 	.statfs		= tux3_statfs,
@@ -283,9 +359,10 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 	if (!blocksize) {
 		if (!silent)
 			printk(KERN_ERR "TUX3: unable to set blocksize\n");
-		goto error;
+		goto error_free;
 	}
 
+	/* Initialize and load sbi */
 	if ((err = load_sb(sbi))) {
 		if (!silent) {
 			if (err == -EINVAL)
@@ -318,8 +395,8 @@ static int tux3_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	sb->s_root = d_make_root(sbi->rootdir);
+	sbi->rootdir = NULL;	/* vfs takes care rootdir inode */
 	if (!sb->s_root) {
-		sbi->rootdir = NULL;
 		err = -ENOMEM;
 		goto error;
 	}
@@ -330,6 +407,7 @@ error:
 	if (!IS_ERR_OR_NULL(rp))
 		replay_stage3(rp, 0);
 	__tux3_put_super(sbi);
+error_free:
 	kfree(sbi);
 
 	return err;

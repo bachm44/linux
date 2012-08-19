@@ -94,6 +94,7 @@ void tux3_set_buffer_dirty_list(struct buffer_head *buffer, int delta,
 
 	if (!buffer->b_assoc_map) {
 		spin_lock(&buffer_mapping->private_lock);
+		BUG_ON(!list_empty(&buffer->b_assoc_buffers));
 		list_move_tail(&buffer->b_assoc_buffers, head);
 		buffer->b_assoc_map = mapping;
 		/* FIXME: hack for save delta */
@@ -108,6 +109,47 @@ void tux3_set_buffer_dirty(struct buffer_head *buffer, int delta)
 	struct dirty_buffers *dirty = inode_dirty_heads(buffer_inode(buffer));
 	struct list_head *head = dirty_head_when(dirty, delta);
 	tux3_set_buffer_dirty_list(buffer, delta, head);
+}
+
+static void __tux3_clear_buffer_dirty(struct buffer_head *buffer)
+{
+	if (buffer->b_assoc_map) {
+		spin_lock(&buffer->b_page->mapping->private_lock);
+		list_del_init(&buffer->b_assoc_buffers);
+		buffer->b_assoc_map = NULL;
+		tux3_clear_bufdelta(buffer);
+		spin_unlock(&buffer->b_page->mapping->private_lock);
+	} else
+		BUG_ON(!list_empty(&buffer->b_assoc_buffers));
+}
+
+void tux3_clear_buffer_dirty(struct buffer_head *buffer)
+{
+	__tux3_clear_buffer_dirty(buffer);
+	clear_buffer_dirty(buffer);
+}
+
+/* Copied from fs/buffer.c */
+static void discard_buffer(struct buffer_head *buffer)
+{
+	/* FIXME: we need lock_buffer()? */
+	lock_buffer(buffer);
+	clear_buffer_dirty(buffer);
+	buffer->b_bdev = NULL;
+	clear_buffer_mapped(buffer);
+	clear_buffer_req(buffer);
+	clear_buffer_new(buffer);
+	clear_buffer_delay(buffer);
+	clear_buffer_unwritten(buffer);
+	unlock_buffer(buffer);
+}
+
+/* Invalidate buffer, this is called from truncate, error path on write, etc */
+void tux3_invalidate_buffer(struct buffer_head *buffer)
+{
+	/* FIXME: we should check buffer_can_modify() to invalidate */
+	__tux3_clear_buffer_dirty(buffer);
+	discard_buffer(buffer);
 }
 
 void init_dirty_buffers(struct dirty_buffers *dirty)

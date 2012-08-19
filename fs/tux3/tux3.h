@@ -9,6 +9,7 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/bio.h>
+#include <linux/blkdev.h>	/* for struct blk_plug */
 #include <linux/mutex.h>
 #include <linux/magic.h>
 #include <linux/slab.h>
@@ -819,6 +820,7 @@ int bytebits(u8 c);
 
 /* writeback.c */
 void tux3_dirty_inode(struct inode *inode, int flags);
+void tux3_clear_dirty_inode(struct inode *inode);
 void tux3_mark_buffer_dirty(struct buffer_head *buffer);
 void tux3_mark_buffer_rollup(struct buffer_head *buffer);
 int tux3_flush_inode(struct inode *inode, unsigned delta);
