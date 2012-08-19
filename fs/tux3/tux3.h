@@ -234,7 +234,9 @@ struct sb {
 	unsigned char *logpos, *logtop; /* Where to emit next log entry */
 	struct mutex loglock;	/* serialize log entries (spinlock me) */
 
+	spinlock_t orphan_add_lock;  /* lock of orphan_add for frontend */
 	struct list_head orphan_add; /* defered orphan inode add list */
+	spinlock_t orphan_del_lock;  /* lock of orphan_del for frontend */
 	struct list_head orphan_del; /* defered orphan inode del list */
 
 	struct stash defree;	/* defer extent frees until after delta */
@@ -690,6 +692,7 @@ int apply_defered_bfree(struct sb *sb, u64 val);
 int force_rollup(struct sb *sb);
 int force_delta(struct sb *sb);
 int change_begin(struct sb *sb);
+int change_end_without_commit(struct sb *sb);
 int change_end(struct sb *sb);
 
 /* dir.c */
