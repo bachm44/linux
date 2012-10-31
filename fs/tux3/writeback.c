@@ -75,8 +75,10 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 	struct sb_delta_dirty *s_ddc;
 	struct inode_delta_dirty *i_ddc;
 
-	if ((tuxnode->flags & mask) == mask)
-		return;
+	if (!(flags & (I_DIRTY_SYNC | I_DIRTY_DATASYNC))) {
+		if ((tuxnode->flags & mask) == mask)
+			return;
+	}
 
 	/*
 	 * If inode is bitmap or volmap, delta is different cycle with
@@ -93,6 +95,8 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 	}
 
 	spin_lock(&tuxnode->lock);
+	tux3_inode_copy_attrs(inode, delta);
+
 	if ((tuxnode->flags & mask) != mask) {
 		tuxnode->flags |= mask;
 
@@ -264,7 +268,7 @@ int tux3_flush_inode(struct inode *inode, unsigned delta)
 	dirty = tux3_dirty_flags(inode, delta);
 
 	if (dirty & (TUX3_DIRTY_BTREE | I_DIRTY_SYNC | I_DIRTY_DATASYNC)) {
-		err = tux3_write_inode(inode, NULL);
+		err = tux3_save_inode(inode, delta);
 		if (err)
 			goto out;
 	}

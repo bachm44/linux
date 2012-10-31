@@ -301,14 +301,25 @@ enum {
 struct inode_delta_dirty {
 	struct list_head dirty_buffers;	/* list for dirty buffers */
 	struct list_head dirty_list;	/* link for dirty inode list */
+
+	unsigned	present;
+	/* inode attributes */
+	umode_t		i_mode;
+	uid_t		i_uid;
+	gid_t		i_gid;
+	unsigned int	i_nlink;
+	dev_t		i_rdev;
+	loff_t		i_size;
+//	struct timespec	i_atime;
+	struct timespec	i_mtime;
+	struct timespec	i_ctime;
+	u64		i_version;
 };
 
 struct xcache;
 struct tux3_inode {
 	struct btree btree;
 	inum_t inum;			/* Inode number */
-	unsigned present;		/* Attributes decoded from or
-					 * to be encoded to inode table */
 	struct xcache *xcache;		/* Extended attribute cache */
 	struct list_head alloc_list;	/* link for deferred inum allocation */
 	struct list_head orphan_list;	/* link for orphan inode list */
@@ -316,6 +327,8 @@ struct tux3_inode {
 	spinlock_t lock;		/* lock for inode metadata */
 	/* Per-delta dirty data for inode */
 	unsigned flags;			/* flags for inode state */
+	unsigned present;		/* Attributes decoded from or
+					 * to be encoded to inode table */
 	struct inode_delta_dirty i_ddc[TUX3_MAX_DELTA];
 #ifdef __KERNEL__
 	int (*io)(int rw, struct bufvec *bufvec);
@@ -482,44 +495,6 @@ struct btree_ops {
 	void (*leaf_dump)(struct btree *btree, void *leaf);
 };
 
-enum atkind {
-	/* Fixed size attrs */
-	RDEV_ATTR	= 0,
-	MODE_OWNER_ATTR	= 1,
-	DATA_BTREE_ATTR	= 2,
-	CTIME_SIZE_ATTR	= 3,
-	LINK_COUNT_ATTR	= 4,
-	MTIME_ATTR	= 5,
-	/* i_blocks	= 6 */
-	/* i_generation	= 7 */
-	/* i_version	= 8 */
-	/* i_flag	= 9 */
-	RESERVED1_ATTR	= 10,
-	VAR_ATTRS,
-	/* Variable size (extended) attrs */
-	IDATA_ATTR	= 11,
-	XATTR_ATTR	= 12,
-	/* acl		= 13 */
-	/* allocation hint = 14 */
-	RESERVED2_ATTR	= 15,
-	MAX_ATTRS,
-};
-
-enum atbit {
-	/* Fixed size attrs */
-	RDEV_BIT	= 1 << RDEV_ATTR,
-	MODE_OWNER_BIT	= 1 << MODE_OWNER_ATTR,
-	CTIME_SIZE_BIT	= 1 << CTIME_SIZE_ATTR,
-	DATA_BTREE_BIT	= 1 << DATA_BTREE_ATTR,
-	LINK_COUNT_BIT	= 1 << LINK_COUNT_ATTR,
-	MTIME_BIT	= 1 << MTIME_ATTR,
-	/* Variable size (extended) attrs */
-	IDATA_BIT	= 1 << IDATA_ATTR,
-	XATTR_BIT	= 1 << XATTR_ATTR,
-};
-
-extern unsigned atsize[MAX_ATTRS];
-
 #ifndef ENOATTR
 #define ENOATTR ENODATA
 #endif
@@ -597,7 +572,6 @@ extern const struct address_space_operations tux_vol_aops;
 
 /* inode.c */
 void tux3_write_failed(struct address_space *mapping, loff_t to);
-int tux3_write_inode(struct inode *inode, struct writeback_control *wbc);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
 int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
@@ -727,6 +701,7 @@ extern struct btree_ops itable_ops;
 extern struct btree_ops otable_ops;
 
 /* inode.c */
+void tux3_inode_copy_attrs(struct inode *inode, unsigned delta);
 struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
 void del_defer_alloc_inum(struct inode *inode);
@@ -735,6 +710,7 @@ struct inode *__tux_create_inode(struct inode *dir, inum_t goal,
 struct inode *tux_create_inode(struct inode *dir, struct tux_iattr *iattr,
 			       dev_t rdev);
 struct inode *tux3_iget(struct sb *sb, inum_t inum);
+int tux3_save_inode(struct inode *inode, unsigned delta);
 void tux3_evict_inode(struct inode *inode);
 
 /* log.c */

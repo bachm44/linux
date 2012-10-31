@@ -10,12 +10,34 @@
 
 #include "tux3.h"
 #include "ileaf.h"
+#include "iattr.h"
 
 #ifndef trace
 #define trace trace_on
 #endif
 
 static void tux_setup_inode(struct inode *inode);
+
+/*
+ * Caller must hold tuxnode->lock. timestamp is updated without
+ * i_mutex, so a bit racy.
+ * FIXME: We should use attr forking instead.
+ */
+void tux3_inode_copy_attrs(struct inode *inode, unsigned delta)
+{
+	struct inode_delta_dirty *i_ddc = tux3_inode_ddc(inode, delta);
+
+	i_ddc->present	= tux_inode(inode)->present;
+	i_ddc->i_mode	= inode->i_mode;
+	i_ddc->i_uid	= i_uid_read(inode);
+	i_ddc->i_gid	= i_gid_read(inode);
+	i_ddc->i_nlink	= inode->i_nlink;
+	i_ddc->i_rdev	= inode->i_rdev;
+	i_ddc->i_size	= inode->i_size;
+	i_ddc->i_mtime	= inode->i_mtime;
+	i_ddc->i_ctime	= inode->i_ctime;
+	i_ddc->i_version = inode->i_version;
+}
 
 static inline void tux_set_inum(struct inode *inode, inum_t inum)
 {
@@ -411,14 +433,13 @@ struct inode *tux3_iget(struct sb *sb, inum_t inum)
 	return inode;
 }
 
-static int save_inode(struct inode *inode)
+static int save_inode(struct inode *inode, unsigned delta)
 {
 	struct sb *sb = tux_sb(inode->i_sb);
 	struct btree *itable = itable_btree(sb);
 	inum_t inum = tux_inode(inode)->inum;
 	int err = 0;
 
-	assert(inum != TUX_LOGMAP_INO && inum != TUX_INVALID_INO);
 	trace("save inode 0x%Lx", inum);
 
 #ifndef __KERNEL__
@@ -446,12 +467,17 @@ static int save_inode(struct inode *inode)
 	}
 
 	/* Write inode attributes to inode btree */
+	struct iattr_req_data iattr_data = {
+		.i_ddc	= tux3_inode_ddc(inode, delta),
+		.root	= &tux_inode(inode)->btree.root,
+		.inode	= inode,
+	};
 	struct ileaf_req rq = {
 		.key = {
 			.start	= inum,
 			.len	= 1,
 		},
-		.data		= inode,
+		.data		= &iattr_data,
 	};
 	err = btree_write(cursor, &rq.key);
 	if (err)
@@ -465,6 +491,22 @@ out:
 	up_write(&cursor->btree->lock);
 	free_cursor(cursor);
 	return err;
+}
+
+int tux3_save_inode(struct inode *inode, unsigned delta)
+{
+	/* Those inodes must not be marked as I_DIRTY_SYNC/DATASYNC. */
+	assert(tux_inode(inode)->inum != TUX_VOLMAP_INO &&
+	       tux_inode(inode)->inum != TUX_LOGMAP_INO &&
+	       tux_inode(inode)->inum != TUX_INVALID_INO);
+	switch (tux_inode(inode)->inum) {
+	case TUX_BITMAP_INO:
+	case TUX_VTABLE_INO:
+	case TUX_ATABLE_INO:
+		/* FIXME: assert(only btree should be changed); */
+		break;
+	}
+	return save_inode(inode, delta);
 }
 
 static int tux3_truncate_blocks(struct inode *inode, loff_t newsize)
@@ -637,23 +679,6 @@ error:
 }
 
 #ifdef __KERNEL__
-/* FIXME: we might want to share with userland's write_inode() */
-int tux3_write_inode(struct inode *inode, struct writeback_control *wbc)
-{
-	/* Those inodes must not be marked as I_DIRTY_SYNC/DATASYNC. */
-	assert(tux_inode(inode)->inum != TUX_VOLMAP_INO &&
-	       tux_inode(inode)->inum != TUX_LOGMAP_INO &&
-	       tux_inode(inode)->inum != TUX_INVALID_INO);
-	switch (tux_inode(inode)->inum) {
-	case TUX_BITMAP_INO:
-	case TUX_VTABLE_INO:
-	case TUX_ATABLE_INO:
-		/* FIXME: assert(only btree should be changed); */
-		break;
-	}
-	return save_inode(inode);
-}
-
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
 	struct inode *inode = dentry->d_inode;
