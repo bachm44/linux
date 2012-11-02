@@ -21,14 +21,26 @@
 
 /*
  * inode->flag usage from LSB:
- * - inode dirty flags for NUM_DIRTY_BITS * TUX3_MAX_DELTA bits
- * - iattr flags for TUX3_MAX_DELTA + 1 bits
- * - xattr flags for TUX3_MAX_DELTA + 1 bits
- * - btree dirty at MSB for TUX3_DIRTY_BTREE bit
+ * - inode dirty flags
+ * - iattr flags
+ * - xattr flags
+ * - btree dirty
  */
 
 /* I_DIRTY_SYNC, I_DIRTY_DATASYNC, and I_DIRTY_PAGES */
 #define NUM_DIRTY_BITS		3
+/* Iattr fork dirty base */
+#define IATTR_DIRTY		1
+/* Xattr fork dirty base */
+#define XATTR_DIRTY		1
+/* Bits usage of inode->flags */
+#define IFLAGS_DIRTY_BITS	(NUM_DIRTY_BITS * TUX3_MAX_DELTA)
+#define IFLAGS_IATTR_BITS	(order_base_2(IATTR_DIRTY + TUX3_MAX_DELTA))
+#define IFLAGS_XATTR_BITS	(order_base_2(XATTR_DIRTY + TUX3_MAX_DELTA))
+/* Bit shift for inode->flags */
+#define IFLAGS_IATTR_SHIFT	IFLAGS_DIRTY_BITS
+#define IFLAGS_XATTR_SHIFT	(IFLAGS_IATTR_SHIFT + IFLAGS_IATTR_BITS)
+
 /* btree root is modified from only backend, so no need per-delta flag */
 #define TUX3_DIRTY_BTREE	(1 << 31)
 
@@ -83,10 +95,8 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 	struct sb_delta_dirty *s_ddc;
 	struct inode_delta_dirty *i_ddc;
 
-	if (!(flags & (I_DIRTY_SYNC | I_DIRTY_DATASYNC))) {
-		if ((tuxnode->flags & mask) == mask)
-			return;
-	}
+	if ((tuxnode->flags & mask) == mask)
+		return;
 
 	/*
 	 * If inode is bitmap or volmap, delta is different cycle with
@@ -103,8 +113,6 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 	}
 
 	spin_lock(&tuxnode->lock);
-	tux3_inode_copy_attrs(inode, delta);
-
 	if ((tuxnode->flags & mask) != mask) {
 		tuxnode->flags |= mask;
 
@@ -138,6 +146,7 @@ void tux3_mark_btree_dirty(struct btree *btree)
 }
 
 #include "writeback_iattrfork.c"
+#include "writeback_xattrfork.c"
 
 /* Clear dirty flags for delta (caller must hold inode->i_lock/tuxnode->lock) */
 static void tux3_clear_dirty_inode_nolock(struct inode *inode, unsigned delta,
@@ -190,6 +199,7 @@ void tux3_clear_dirty_inode(struct inode *inode)
 	struct tux3_inode *tuxnode = tux_inode(inode);
 	spin_lock(&inode->i_lock);
 	spin_lock(&tuxnode->lock);
+	tux3_iattr_clear_dirty(tuxnode);
 	tux3_clear_dirty_inode_nolock(inode, tux3_inode_delta(inode), 1);
 	spin_unlock(&tuxnode->lock);
 	spin_unlock(&inode->i_lock);
