@@ -126,10 +126,13 @@ void free_forked_buffers(struct sb *sb, int umount)
 
 		trace_on("buffer %p, page %p, count %u",
 			 buffer, page, page_count(page));
-		assert(!PageDirty(page)); /* page should already be submitted */
-		assert(!umount || !PageWriteback(page));
-		/* I/O was done? */
-		if (!PageWriteback(page)) {
+#ifdef DISABLE_ASYNC_BACKEND
+		/* The page should already be submitted if no async frontend */
+		assert(!PageDirty(page));
+#endif
+		assert(!umount || (!PageDirty(page) && !PageWriteback(page)));
+		/* I/O was submitted, and I/O was done? */
+		if (!PageDirty(page) && !PageWriteback(page)) {
 			/* All users were gone or from umount? */
 			if (umount || is_freeable_forked(buffer, page)) {
 				clear_buffer_freeable(buffer);
@@ -415,7 +418,7 @@ struct buffer_head *blockdirty(struct buffer_head *buffer, unsigned newdelta)
 	case RET_FORKED:
 		/* This page was already forked. Retry from lookup page. */
 		buffer = ERR_PTR(-EAGAIN);
-		assert(0);	/* FIXME: we have to handle -EAGAIN case */
+		WARN_ON(1);
 		/* FALLTHRU */
 	case RET_ALREADY_DIRTY:
 		/* This buffer was already dirtied. Done. */
@@ -527,7 +530,7 @@ struct page *pagefork_for_blockdirty(struct page *oldpage, unsigned newdelta)
 	case RET_FORKED:
 		/* This page was already forked. Retry from lookup page. */
 		newpage = ERR_PTR(-EAGAIN);
-		assert(0);	/* FIXME: we have to handle -EAGAIN case */
+		WARN_ON(1);
 	case RET_ALREADY_DIRTY:
 		/* This buffer was already dirtied. Done. */
 		goto out;
