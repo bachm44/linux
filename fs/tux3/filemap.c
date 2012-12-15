@@ -523,11 +523,35 @@ static int map_region(struct inode *inode, block_t start, unsigned count,
 		      struct seg map[], unsigned max_segs, enum map_mode mode)
 {
 	struct btree *btree = &tux_inode(inode)->btree;
+	int segs;
+
+	/*
+	 * NOTE: hole extents are not protected by i_mutex on MAP_READ
+	 * path. So, we shouldn't assume it is stable.
+	 */
+
+	if (mode == MAP_READ) {
+		/* If whole region was hole, don't need to call map_region */
+		if (tux3_is_hole(inode, start, count)) {
+			assert(max_segs >= 1);
+			map[0].state = SEG_HOLE;
+			map[0].block = 0;
+			map[0].count = count;
+			return 1;
+		}
+	}
 
 	if (btree->ops == &dtree1_ops)
-		return map_region1(inode, start, count, map, max_segs, mode);
+		segs = map_region1(inode, start, count, map, max_segs, mode);
 	else
-		return map_region2(inode, start, count, map, max_segs, mode);
+		segs = map_region2(inode, start, count, map, max_segs, mode);
+
+	if (mode == MAP_READ) {
+		/* Update map[] with hole information */
+		segs = tux3_map_hole(inode, start, count, map, segs, max_segs);
+	}
+
+	return segs;
 }
 
 static int filemap_extent_io(enum map_mode mode, struct bufvec *bufvec);
@@ -823,6 +847,22 @@ static int tux3_readpages(struct file *file, struct address_space *mapping,
 }
 
 #include "filemap_blocklib.c"
+
+static void tux3_write_failed(struct address_space *mapping, loff_t to)
+{
+	struct inode *inode = mapping->host;
+
+	if (to > inode->i_size) {
+		/*
+		 * write_{begin,end}() is protected by change_{begin,end},
+		 * so there is no new blocks here on this page.
+		 * No need to adjust the dtree.
+		 *
+		 * FIXME: right?
+		 */
+		truncate_pagecache(inode, to, inode->i_size);
+	}
+}
 
 static int tux3_da_write_begin(struct file *file, struct address_space *mapping,
 			       loff_t pos, unsigned len, unsigned flags,

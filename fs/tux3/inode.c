@@ -9,6 +9,7 @@
  */
 
 #include "tux3.h"
+#include "filemap_hole.h"
 #include "ileaf.h"
 #include "iattr.h"
 
@@ -486,29 +487,11 @@ int tux3_save_inode(struct inode *inode, unsigned delta)
 	return save_inode(inode, delta);
 }
 
-static int tux3_truncate_blocks(struct inode *inode, loff_t newsize)
-{
-	struct sb *sb = tux_sb(inode->i_sb);
-	tuxkey_t index = (newsize + sb->blockmask) >> sb->blockbits;
-
-	return btree_chop(&tux_inode(inode)->btree, index, TUXKEY_LIMIT);
-}
-
 #ifdef __KERNEL__
 /* Truncate partial block. If partial, we have to update last block. */
 static int tux3_truncate_partial_block(struct inode *inode, loff_t newsize)
 {
 	return tux3_truncate_page(inode->i_mapping, newsize, tux3_get_block);
-}
-
-void tux3_write_failed(struct address_space *mapping, loff_t to)
-{
-	struct inode *inode = mapping->host;
-
-	if (to > inode->i_size) {
-		truncate_pagecache(inode, to, inode->i_size);
-		tux3_truncate_blocks(inode, inode->i_size);
-	}
 }
 #endif /* !__KERNEL__ */
 
@@ -532,11 +515,16 @@ static int tux3_truncate(struct inode *inode, loff_t newsize)
 			goto error;
 	}
 
+#ifdef __KERNEL__
+	/* FIXME: The buffer fork before invalidate. We should merge to
+	 * truncate_setsize() */
+	tux3_truncate_inode_pages_range(inode->i_mapping, newsize, LLONG_MAX);
+#endif
 	/* Change i_size, then clean buffers */
 	truncate_setsize(inode, newsize);
 
 	if (!is_expand) {
-		err = tux3_truncate_blocks(inode, newsize);
+		err = tux3_add_truncate_hole(inode, newsize);
 		if (err)
 			goto error;
 	}
@@ -565,6 +553,14 @@ static int purge_inode(struct inode *inode)
 	return btree_chop(itable, tux_inode(inode)->inum, 1);
 }
 
+static int tux3_truncate_blocks(struct inode *inode, loff_t newsize)
+{
+	struct sb *sb = tux_sb(inode->i_sb);
+	tuxkey_t index = (newsize + sb->blockmask) >> sb->blockbits;
+
+	return btree_chop(&tux_inode(inode)->btree, index, TUXKEY_LIMIT);
+}
+
 /*
  * In-core inode is going to be freed, do job for it.
  */
@@ -587,6 +583,11 @@ void tux3_evict_inode(struct inode *inode)
 		unlock = 1;
 	}
 
+	/*
+	 * evict_inode() should be called only if there is no
+	 * in-progress buffers in backend. So we don't have to call
+	 * tux3_truncate_inode_pages_range() here.
+	 */
 #ifdef __KERNEL__
 	/* Block device special file is still overwriting i_mapping */
 	truncate_inode_pages(&inode->i_data, 0);
@@ -607,6 +608,7 @@ void tux3_evict_inode(struct inode *inode)
 		 */
 		int err;
 
+		tux3_clear_hole(inode);
 		/*
 		 * FIXME: i_blocks (if implemented) would be better way
 		 * than inode->i_size to know whether we have to

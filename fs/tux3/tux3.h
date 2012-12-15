@@ -110,6 +110,7 @@ static inline void *decode48(void *at, u64 *val)
 
 #define MAX_INODES_BITS		48
 #define MAX_BLOCKS_BITS		48
+#define MAX_BLOCKS		((block_t)1 << 48)
 #define MAX_EXTENT		(1 << 6)
 
 #define SB_LOC			(1 << 12)
@@ -414,6 +415,27 @@ static inline struct dev *sb_dev(struct sb *sb)
 }
 #endif /* !__KERNEL__ */
 
+/* Choice sb->delta or sb->rollup from inode */
+static inline int tux3_inode_delta(struct inode *inode)
+{
+	unsigned delta;
+
+	switch (tux_inode(inode)->inum) {
+	case TUX_VOLMAP_INO:
+		/* volmap are special buffer, and always TUX3_INIT_DELTA */
+		delta = TUX3_INIT_DELTA;
+		break;
+	case TUX_BITMAP_INO:
+		delta = tux_sb(inode->i_sb)->rollup;
+		break;
+	default:
+		delta = tux_sb(inode->i_sb)->delta;
+		break;
+	}
+
+	return delta;
+}
+
 /* Get delta from free running counter */
 static inline unsigned tux3_delta(unsigned delta)
 {
@@ -579,12 +601,13 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 int tux3_truncate_page(struct address_space *mapping,
 		       loff_t from, get_block_t *get_block);
+void tux3_truncate_inode_pages_range(struct address_space *mapping,
+				     loff_t lstart, loff_t lend);
 extern const struct address_space_operations tux_aops;
 extern const struct address_space_operations tux_blk_aops;
 extern const struct address_space_operations tux_vol_aops;
 
 /* inode.c */
-void tux3_write_failed(struct address_space *mapping, loff_t to);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
 int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
