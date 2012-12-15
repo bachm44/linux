@@ -754,6 +754,8 @@ struct inode *tux_create_inode(struct inode *dir, struct tux_iattr *iattr,
 struct inode *tux3_iget(struct sb *sb, inum_t inum);
 int tux3_save_inode(struct inode *inode, struct tux3_iattr_data *idata,
 		    unsigned delta);
+int tux3_purge_inode(struct inode *inode, struct tux3_iattr_data *idata,
+		     unsigned delta);
 int tux3_drop_inode(struct inode *inode);
 void tux3_evict_inode(struct inode *inode);
 
@@ -837,6 +839,7 @@ static inline void tux3_mark_inode_dirty_sync(struct inode *inode)
 }
 
 void tux3_dirty_inode(struct inode *inode, int flags);
+void tux3_mark_inode_to_delete(struct inode *inode);
 void tux3_iattrdirty(struct inode *inode);
 void tux3_xattrdirty(struct inode *inode);
 void tux3_xattr_read_and_clear(struct inode *inode);
@@ -847,6 +850,7 @@ int tux3_flush_inode_internal(struct inode *inode, unsigned delta);
 int tux3_flush_inode(struct inode *inode, unsigned delta);
 int tux3_flush_inodes(struct sb *sb, unsigned delta);
 void tux3_clear_dirty_inodes(struct sb *sb, unsigned delta);
+void tux3_check_destroy_inode_flags(struct inode *inode);
 
 /* xattr.c */
 void atable_init_base(struct sb *sb);
