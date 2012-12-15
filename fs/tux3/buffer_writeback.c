@@ -76,7 +76,6 @@ static inline void bufvec_buffer_move_to_contig(struct bufvec *bufvec,
 	 * FIXME: above is true?
 	 */
 	list_move_tail(&buffer->b_assoc_buffers, &bufvec->contig);
-	buffer->b_assoc_map = NULL;
 	bufvec->contig_count++;
 }
 
@@ -166,11 +165,12 @@ static struct buffer_head *bufvec_bio_del_buffer(struct bio *bio)
 	return buffer;
 }
 
-static struct sb *bufvec_bio_sb(struct bio *bio)
+static struct address_space *bufvec_bio_mapping(struct bio *bio)
 {
 	struct buffer_head *buffer = bio->bi_private;
 	assert(buffer);
-	return tux_sb(buffer_inode(buffer)->i_sb);
+	/* FIXME: we want to remove usage of b_assoc_map */
+	return buffer->b_assoc_map;
 }
 
 static struct bio *bufvec_bio_alloc(struct sb *sb, unsigned int count,
@@ -290,14 +290,6 @@ static void bufvec_page_end_io(struct page *page, int uptodate, int quiet)
 	end_page_writeback(page);
 }
 
-/* Preparation buffer for I/O */
-static void bufvec_prepare_buffer(struct buffer_head *buffer)
-{
-	tux3_clear_bufdelta(buffer);	/* FIXME: hack for save delta */
-	assert(buffer_dirty(buffer));	/* Who cleared the dirty? */
-	clear_buffer_dirty(buffer);
-}
-
 /* Completion of buffer for I/O */
 static void bufvec_buffer_end_io(struct buffer_head *buffer, int uptodate,
 				 int quiet)
@@ -344,7 +336,7 @@ static void bufvec_end_io_multiple(struct bio *bio, int err)
 {
 	const int uptodate = test_bit(BIO_UPTODATE, &bio->bi_flags);
 	const int quiet = test_bit(BIO_QUIET, &bio->bi_flags);
-	struct sb *sb;
+	struct address_space *mapping;
 	struct page *page;
 	struct buffer_head *buffer, *first, *tmp;
 	unsigned long flags;
@@ -352,16 +344,18 @@ static void bufvec_end_io_multiple(struct bio *bio, int err)
 	trace("bio %p, err %d", bio, err);
 
 	/* FIXME: inode is still guaranteed to be available? */
-	sb = bufvec_bio_sb(bio);
+	mapping = bufvec_bio_mapping(bio);
+
 	buffer = bufvec_bio_del_buffer(bio);
 	page = buffer->b_page;
 	first = page_buffers(page);
 
 	trace("buffer %p", buffer);
+	tux3_clear_buffer_dirty_for_io_hack(buffer);
 	bufvec_buffer_end_io(buffer, uptodate, quiet);
 	put_bh(buffer);
 
-	iowait_inflight_dec(sb->iowait);
+	iowait_inflight_dec(tux_sb(mapping->host->i_sb)->iowait);
 	bio_put(bio);
 
 	/* Check buffers on the page. If all was done, clear writeback */
@@ -414,7 +408,8 @@ static void bufvec_bio_add_multiple(struct bufvec *bufvec)
 	/* Set buffer_async_write to all buffers at first, then submit */
 	for (i = 0; i < bufvec->on_page_idx; i++) {
 		struct buffer_head *buffer = bufvec->on_page[i].buffer;
-		bufvec_prepare_buffer(buffer);
+		get_bh(buffer);
+		tux3_clear_buffer_dirty_for_io(buffer);
 		/* Buffer locking order for I/O is lower index to
 		 * bigger index. And grouped by inode. FIXME: is this sane? */
 		/* lock_buffer(buffer); FIXME: need? */
@@ -436,7 +431,6 @@ static void bufvec_bio_add_multiple(struct bufvec *bufvec)
 		if (!bio_add_page(bufvec->bio, page, length, offset))
 			assert(0);	/* why? */
 
-		get_bh(buffer);
 		bufvec_bio_add_buffer(bufvec, buffer);
 
 		bufvec_submit_bio(bufvec);
@@ -453,13 +447,13 @@ static void bufvec_end_io(struct bio *bio, int err)
 {
 	const int uptodate = test_bit(BIO_UPTODATE, &bio->bi_flags);
 	const int quiet = test_bit(BIO_QUIET, &bio->bi_flags);
-	struct sb *sb;
+	struct address_space *mapping;
 	struct page *page, *last_page;
 
 	trace("bio %p, err %d", bio, err);
 
 	/* FIXME: inode is still guaranteed to be available? */
-	sb = bufvec_bio_sb(bio);
+	mapping = bufvec_bio_mapping(bio);
 
 	/* Remove buffer from bio, then unlock buffer */
 	last_page = NULL;
@@ -471,6 +465,7 @@ static void bufvec_end_io(struct bio *bio, int err)
 		page = buffer->b_page;
 
 		trace("buffer %p", buffer);
+		tux3_clear_buffer_dirty_for_io_hack(buffer);
 		put_bh(buffer);
 
 		if (page != last_page) {
@@ -479,7 +474,7 @@ static void bufvec_end_io(struct bio *bio, int err)
 		}
 	}
 
-	iowait_inflight_dec(sb->iowait);
+	iowait_inflight_dec(tux_sb(mapping->host->i_sb)->iowait);
 	bio_put(bio);
 }
 
@@ -525,8 +520,8 @@ static void bufvec_bio_add_page(struct bufvec *bufvec)
 	bufvec_prepare_and_lock_page(bufvec, page);
 	for (i = 0; i < bufvec->on_page_idx; i++) {
 		struct buffer_head *buffer = bufvec->on_page[i].buffer;
-		bufvec_prepare_buffer(buffer);
 		get_bh(buffer);
+		tux3_clear_buffer_dirty_for_io(buffer);
 		bufvec_bio_add_buffer(bufvec, buffer);
 	}
 	bufvec_prepare_and_unlock_page(page);

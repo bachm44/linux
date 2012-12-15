@@ -57,26 +57,34 @@ static void tux3_clear_bufdelta(struct buffer_head *buffer)
 	}
 }
 
-static int tux3_bufdelta(struct buffer_head *buffer)
+/*
+ * Check buffer dirty and delta number atomically.
+ * >= 0 - delta number of buffer
+ *  < 0 - buffer is not dirty
+ */
+static int buffer_check_dirty_delta(unsigned long state)
 {
-	assert(buffer_dirty(buffer));
-	while (1) {
-		unsigned long state = buffer->b_state;
-		if (tux3_bufsta_has_delta(state))
-			return tux3_bufsta_get_delta(state);
-		/* The delta is not yet set. Retry */
-		cpu_relax();
-	}
+	if (tux3_bufsta_has_delta(state))
+		return tux3_bufsta_get_delta(state);
+	/* Buffer is not dirty */
+	return -1;	/* never much with tux3_delta() */
 }
 
-/* Can we modify buffer from delta */
+/* Check whether buffer was already dirtied atomically for delta */
+int buffer_already_dirty(struct buffer_head *buffer, unsigned delta)
+{
+	unsigned long state = buffer->b_state;
+	/* If buffer had same delta, buffer was already dirtied for delta */
+	return buffer_check_dirty_delta(state) == tux3_delta(delta);
+}
+
+/* Check whether we can modify buffer atomically for delta */
 int buffer_can_modify(struct buffer_head *buffer, unsigned delta)
 {
-	/* If true, buffer is still not stabilized. We can modify. */
-	if (tux3_bufdelta(buffer) == tux3_delta(delta))
-		return 1;
-	/* The buffer may already be in stabilized stage for backend. */
-	return 0;
+	unsigned long state = buffer->b_state;
+	/* If buffer is clean or dirtied for same delta, we can modify */
+	return !tux3_bufsta_has_delta(state) ||
+		tux3_bufsta_get_delta(state) == tux3_delta(delta);
 }
 
 /*
@@ -107,19 +115,16 @@ void tux3_set_buffer_dirty(struct address_space *mapping,
 	tux3_set_buffer_dirty_list(mapping, buffer, delta, head);
 }
 
-#define buffer_need_fork(b, d) (buffer_dirty(b) && !buffer_can_modify(b, d))
-
 /*
  * Caller must hold lock_page() or backend (otherwise, you may race
  * with buffer fork or set dirty)
  */
-static void __tux3_clear_buffer_dirty(struct buffer_head *buffer,
-				      unsigned delta)
+void tux3_clear_buffer_dirty(struct buffer_head *buffer, unsigned delta)
 {
 	struct address_space *buffer_mapping = buffer->b_assoc_map;
 
 	/* The buffer must not need to fork */
-	assert(!buffer_need_fork(buffer, delta));
+	assert(buffer_can_modify(buffer, delta));
 
 	if (buffer_mapping) {
 		spin_lock(&buffer_mapping->private_lock);
@@ -127,14 +132,30 @@ static void __tux3_clear_buffer_dirty(struct buffer_head *buffer,
 		buffer->b_assoc_map = NULL;
 		tux3_clear_bufdelta(buffer);
 		spin_unlock(&buffer_mapping->private_lock);
+
+		clear_buffer_dirty(buffer);
 	} else
 		BUG_ON(!list_empty(&buffer->b_assoc_buffers));
 }
 
-void tux3_clear_buffer_dirty(struct buffer_head *buffer, unsigned delta)
+/* Clear buffer dirty for I/O (Caller must remove buffer from list) */
+static void tux3_clear_buffer_dirty_for_io(struct buffer_head *buffer)
 {
-	__tux3_clear_buffer_dirty(buffer, delta);
+	assert(list_empty(&buffer->b_assoc_buffers));
+	assert(buffer_dirty(buffer));	/* Who cleared the dirty? */
+	/*buffer->b_assoc_map = NULL;*/	/* FIXME: hack for *_for_io_hack */
+	tux3_clear_bufdelta(buffer);	/* FIXME: hack for save delta */
 	clear_buffer_dirty(buffer);
+}
+
+/*
+ * This is hack to know ->mapping in end_io.
+ * So, tux3_clear_buffer_dirty_for_io() doesn't clear buffer->b_assoc_map.
+ * FIXME: remove this hack.
+ */
+static void tux3_clear_buffer_dirty_for_io_hack(struct buffer_head *buffer)
+{
+	buffer->b_assoc_map = NULL;
 }
 
 /* This is called for the freeing block on volmap */
@@ -161,7 +182,7 @@ static void discard_buffer(struct buffer_head *buffer)
 {
 	/* FIXME: we need lock_buffer()? */
 	lock_buffer(buffer);
-	clear_buffer_dirty(buffer);
+	/*clear_buffer_dirty(buffer);*/
 	buffer->b_bdev = NULL;
 	clear_buffer_mapped(buffer);
 	clear_buffer_req(buffer);
@@ -178,7 +199,7 @@ static void discard_buffer(struct buffer_head *buffer)
 void tux3_invalidate_buffer(struct buffer_head *buffer)
 {
 	unsigned delta = tux3_inode_delta(buffer_inode(buffer));
-	__tux3_clear_buffer_dirty(buffer, delta);
+	tux3_clear_buffer_dirty(buffer, delta);
 	discard_buffer(buffer);
 }
 
