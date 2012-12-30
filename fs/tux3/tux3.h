@@ -239,8 +239,7 @@ struct sb {
 	wait_queue_head_t delta_event_wq;	/* wait queue for delta event */
 #ifndef DISABLE_ASYNC_BACKEND
 	/* work to flush delta */
-	struct workqueue_struct *flush_wq;
-	struct work_struct flush_work;
+	struct task_struct *flush_task;
 #endif
 
 	struct btree itable;	/* Inode table btree */
@@ -333,6 +332,9 @@ enum {
 	LOG_DELTA,		/* just for debugging */
 	LOG_TYPES
 };
+
+/* For debugging, MAX_ATTRS is smaller than 31, so present never be -1 */
+#define TUX3_INVALID_PRESENT		(-1U)
 
 /* Inode attributes data */
 struct tux3_iattr_data {
@@ -614,10 +616,12 @@ extern const struct inode_operations tux_dir_iops;
 int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 struct buffer_head *__get_buffer(struct page *page, int offset);
+void tux3_try_cancel_dirty_page(struct page *page);
 int tux3_truncate_partial_block(struct inode *inode, loff_t newsize);
 void tux3_truncate_inode_pages_range(struct address_space *mapping,
 				     loff_t lstart, loff_t lend);
-extern const struct address_space_operations tux_aops;
+extern const struct address_space_operations tux_file_aops;
+extern const struct address_space_operations tux_symlink_aops;
 extern const struct address_space_operations tux_blk_aops;
 extern const struct address_space_operations tux_vol_aops;
 
@@ -708,6 +712,8 @@ void change_begin_atomic_nested(struct sb *sb, void **ptr);
 void change_end_atomic_nested(struct sb *sb, void *ptr);
 void change_begin(struct sb *sb);
 int change_end(struct sb *sb);
+void change_begin_if_needed(struct sb *sb);
+void change_end_if_needed(struct sb *sb);
 
 /* dir.c */
 void tux_update_dirent(struct inode *dir, struct buffer_head *buffer,

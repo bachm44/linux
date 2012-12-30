@@ -616,7 +616,12 @@ int tux3_drop_inode(struct inode *inode)
 		if (inode->i_state & I_DIRTY) {
 #ifdef __KERNEL__
 			/* If unmount path, inode should be clean */
-			assert(inode->i_sb->s_flags & MS_ACTIVE);
+			if (!(inode->i_sb->s_flags & MS_ACTIVE)) {
+				warn("inode %p, inum %Lu, state %lx/%x",
+				     inode, tux_inode(inode)->inum,
+				     inode->i_state, tux_inode(inode)->flags);
+				assert(inode->i_sb->s_flags & MS_ACTIVE);
+			}
 #endif
 			return 0;
 		}
@@ -821,7 +826,7 @@ static void tux_setup_inode(struct inode *inode)
 	case S_IFREG:
 		inode->i_op = &tux_file_iops;
 		inode->i_fop = &tux_file_fops;
-		inode->i_mapping->a_ops = &tux_aops;
+		inode->i_mapping->a_ops = &tux_file_aops;
 		tux_inode(inode)->io = tux3_filemap_overwrite_io;
 		break;
 	case S_IFDIR:
@@ -833,7 +838,7 @@ static void tux_setup_inode(struct inode *inode)
 		break;
 	case S_IFLNK:
 		inode->i_op = &tux_symlink_iops;
-		inode->i_mapping->a_ops = &tux_aops;
+		inode->i_mapping->a_ops = &tux_symlink_aops;
 		tux_inode(inode)->io = tux3_filemap_redirect_io;
 		break;
 	case 0: /* internal inode */
