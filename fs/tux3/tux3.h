@@ -470,6 +470,11 @@ typedef struct {
 	__be16 rec_len;
 	u8 name_len, type;
 	char name[];
+	/*
+	 * On 64bit arch sizeof(tux_dirent) == 16. We should use
+	 * offsetof(tux_dirent, name) instead.
+	 */
+	/* u32 __pad; */
 } tux_dirent;
 
 struct btree_key_range {
@@ -608,6 +613,8 @@ extern const struct inode_operations tux_dir_iops;
 /* filemap.c */
 int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
+int tux3_truncate_page(struct address_space *mapping,
+		       loff_t from, get_block_t *get_block);
 extern const struct address_space_operations tux_aops;
 extern const struct address_space_operations tux_blk_aops;
 extern const struct address_space_operations tux_vol_aops;
