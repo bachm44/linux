@@ -9,6 +9,8 @@
 #define trace trace_on
 #endif
 
+static void __delta_transition(struct sb *sb, struct delta_ref *delta_ref);
+
 /*
  * Need frontend modification of backend buffers. (modification
  * after latest delta commit and before rollup).
@@ -24,7 +26,11 @@ static void init_sb(struct sb *sb)
 	int i;
 
 	/* Initialize sb */
+	for (i = 0; i < ARRAY_SIZE(sb->delta_refs); i++)
+		atomic_set(&sb->delta_refs[0].refcount, 0);
+
 	init_rwsem(&sb->delta_lock);
+	init_waitqueue_head(&sb->delta_event_wq);
 	mutex_init(&sb->loglock);
 	INIT_LIST_HEAD(&sb->orphan_add);
 	INIT_LIST_HEAD(&sb->orphan_del);
@@ -58,8 +64,13 @@ static loff_t calc_maxbytes(loff_t blocksize)
 /* Setup sb by on-disk super block */
 static void __setup_sb(struct sb *sb, struct disksuper *super)
 {
-	sb->delta = TUX3_INIT_DELTA;
-	sb->rollup = TUX3_INIT_DELTA;
+	sb->delta		= TUX3_INIT_DELTA;
+	sb->rollup		= TUX3_INIT_DELTA;
+	sb->marshal_delta	= TUX3_INIT_DELTA - 1;
+	sb->committed_delta	= TUX3_INIT_DELTA - 1;
+
+	/* Setup initial delta_ref */
+	__delta_transition(sb, &sb->delta_refs[0]);
 
 	sb->blockbits = be16_to_cpu(super->blockbits);
 	sb->volblocks = be64_to_cpu(super->volblocks);
@@ -350,12 +361,6 @@ static void post_commit(struct sb *sb, unsigned delta)
 	tux3_clear_dirty_inodes(sb, delta);
 }
 
-static int need_delta(struct sb *sb)
-{
-	static unsigned crudehack;
-	return !(++crudehack % 10);
-}
-
 static int need_rollup(struct sb *sb)
 {
 	static unsigned crudehack;
@@ -367,7 +372,7 @@ enum rollup_flags { NO_ROLLUP, ALLOW_ROLLUP, FORCE_ROLLUP, };
 /* must hold down_write(&sb->delta_lock) */
 static int do_commit(struct sb *sb, enum rollup_flags rollup_flag)
 {
-	unsigned delta = sb->delta++;
+	unsigned delta = sb->marshal_delta;
 	struct iowait iowait;
 	int err = 0;
 
@@ -421,70 +426,286 @@ static int do_commit(struct sb *sb, enum rollup_flags rollup_flag)
 	return err; /* FIXME: error handling */
 }
 
-#ifdef ATOMIC
-/* FIXME: quickly designed, rethink this. */
-int force_rollup(struct sb *sb)
+/* FIXME: This should be daemonize */
+static int flush_pending_delta(struct sb *sb)
 {
-	int err;
+	if (!test_bit(TUX3_COMMIT_PENDING_BIT, &sb->backend_state))
+		goto out;
 
-	down_write(&sb->delta_lock);
-	err = do_commit(sb, FORCE_ROLLUP);
-	up_write(&sb->delta_lock);
+	if (test_and_clear_bit(TUX3_COMMIT_PENDING_BIT, &sb->backend_state)) {
+		unsigned delta = sb->marshal_delta;
+		int err;
+#ifndef ROLLUP_DEBUG
+		enum rollup_flags rollup_flag = ALLOW_ROLLUP;
+#else
+		struct delta_ref *delta_ref = sb->pending_delta;
+		enum rollup_flags rollup_flag = delta_ref->rollup_flag;
+		sb->pending_delta = NULL;
+#endif
+
+		down_write(&sb->delta_lock);
+		err = do_commit(sb, rollup_flag);
+
+		/*
+		 * Check referencer of forked buffer was gone, and can free
+		 * FIXME: For now, although protecting this by ->delta_lock,
+		 * because easy to avoid race.  But probably, we would not
+		 * need to protect.
+		 */
+		free_forked_buffers(sb, 0);
+
+		sb->committed_delta = delta;
+		clear_bit(TUX3_COMMIT_RUNNING_BIT, &sb->backend_state);
+		up_write(&sb->delta_lock);
+
+		/* Wake up waiters for delta commit */
+		wake_up_all(&sb->delta_event_wq);
+
+		return err;
+	}
+
+out:
+	return 0;
+}
+
+/*
+ * Provide transaction boundary for delta, and delta transition request.
+ */
+
+/* Grab the reference of current delta */
+static struct delta_ref *delta_get(struct sb *sb)
+{
+	struct delta_ref *delta_ref;
+	/*
+	 * Try to grab reference. If failed, retry.
+	 *
+	 * memory barrier pairs with __delta_transition(). But we never
+	 * free ->current_delta, so we don't need rcu_read_lock().
+	 */
+	do {
+		delta_ref = rcu_dereference_check(sb->current_delta, 1);
+	} while (!atomic_inc_not_zero(&delta_ref->refcount));
+
+	trace("delta %u, refcount %u",
+	      delta_ref->delta, atomic_read(&delta_ref->refcount));
+
+	return delta_ref;
+}
+
+/* Release the reference of delta */
+static void delta_put(struct sb *sb, struct delta_ref *delta_ref)
+{
+	if (atomic_dec_and_test(&delta_ref->refcount)) {
+		/* FIXME: If we got daemon, this should wake up it */
+		trace("set TUX3_COMMIT_PENDING_BIT");
+		set_bit(TUX3_COMMIT_PENDING_BIT, &sb->backend_state);
+
+		/* Wake up waiters for pending marshal delta */
+		wake_up_all(&sb->delta_event_wq);
+	}
+
+	trace("delta %u, refcount %u",
+	      delta_ref->delta, atomic_read(&delta_ref->refcount));
+}
+
+/* Update current delta */
+static void __delta_transition(struct sb *sb, struct delta_ref *delta_ref)
+{
+	/* Set the initial refcount is released by try_delta_transition(). */
+	assert(atomic_read(&delta_ref->refcount) == 0);
+	atomic_set(&delta_ref->refcount, 1);
+	/* Assign the delta number */
+	delta_ref->delta = sb->delta++;
+#ifdef ROLLUP_DEBUG
+	delta_ref->rollup_flag = ALLOW_ROLLUP;
+#endif
+
+	/*
+	 * Update current delta, then release reference.
+	 *
+	 * memory barrier pairs with delta_get().
+	 */
+	rcu_assign_pointer(sb->current_delta, delta_ref);
+}
+
+/*
+ * Delta transition.
+ *
+ * Find the next delta_ref, then update current delta to it, and
+ * release previous delta refcount.
+ */
+static void delta_transition(struct sb *sb)
+{
+	/*
+	 * This is exclusive by TUX3_COMMIT_RUNNING_BIT (no writer),
+	 * so rcu_dereference may not be needed.
+	 */
+	struct delta_ref *prev = rcu_dereference_check(sb->current_delta, 1);
+	struct delta_ref *delta_ref;
+
+	/* Find the next delta_ref */
+	delta_ref = prev + 1;
+	if (delta_ref == &sb->delta_refs[TUX3_MAX_DELTA])
+		delta_ref = &sb->delta_refs[0];
+
+	/* Update the current delta. */
+	__delta_transition(sb, delta_ref);
+
+	/* Set delta for marshal */
+	sb->marshal_delta = prev->delta;
+#ifdef ROLLUP_DEBUG
+	sb->pending_delta = prev;
+#endif
+
+	/* Release initial refcount after updated the current delta. */
+	delta_put(sb, prev);
+
+	trace("prev %u, next %u", prev->delta, delta_ref->delta);
+
+	/* Wake up waiters for delta transition */
+	wake_up_all(&sb->delta_event_wq);
+}
+
+/* Try delta transition */
+static void try_delta_transition(struct sb *sb)
+{
+	trace("marshal %u, backend_state %lx",
+	      sb->marshal_delta, sb->backend_state);
+	if (!test_and_set_bit(TUX3_COMMIT_RUNNING_BIT, &sb->backend_state))
+		delta_transition(sb);
+}
+
+#define delta_after_eq(a, b)			\
+	(typecheck(unsigned, a) &&		\
+	 typecheck(unsigned, b) &&		\
+	 ((int)(a) - (int)(b) >= 0))
+
+/* Do the delta transition until specified delta */
+static int try_delta_transition_until_delta(struct sb *sb, unsigned delta)
+{
+	trace("delta %u, marshal %u, backend_state %lx",
+	      delta, sb->marshal_delta, sb->backend_state);
+
+	/* Already delta transition was started for delta */
+	if (delta_after_eq(sb->marshal_delta, delta))
+		return 1;
+
+	if (!test_and_set_bit(TUX3_COMMIT_RUNNING_BIT, &sb->backend_state)) {
+		/* Recheck after grabed TUX3_COMMIT_RUNNING_BIT */
+		if (delta_after_eq(sb->marshal_delta, delta)) {
+			clear_bit(TUX3_COMMIT_RUNNING_BIT, &sb->backend_state);
+			return 1;
+		}
+
+		delta_transition(sb);
+	}
+
+	return delta_after_eq(sb->marshal_delta, delta);
+}
+
+/* Advance delta transition until specified delta */
+static int wait_for_transition(struct sb *sb, unsigned delta)
+{
+	return wait_event_killable(sb->delta_event_wq,
+				   try_delta_transition_until_delta(sb, delta));
+}
+
+static int try_flush_pending_until_delta(struct sb *sb, unsigned delta)
+{
+	trace("delta %u, committed %u, backend_state %lx",
+	      delta, sb->committed_delta, sb->backend_state);
+
+	if (!delta_after_eq(sb->committed_delta, delta))
+		flush_pending_delta(sb);	/* FIXME: daemonize */
+
+	return delta_after_eq(sb->committed_delta, delta);
+}
+
+static int wait_for_commit(struct sb *sb, unsigned delta)
+{
+	return wait_event_killable(sb->delta_event_wq,
+				   try_flush_pending_until_delta(sb, delta));
+}
+
+static int sync_current_delta(struct sb *sb, enum rollup_flags rollup_flag)
+{
+	struct delta_ref *delta_ref;
+	unsigned delta;
+	int err = 0;
+
+	/* Get delta that have to write */
+	delta_ref = delta_get(sb);
+#ifdef ROLLUP_DEBUG
+	delta_ref->rollup_flag = rollup_flag;
+#endif
+	delta = delta_ref->delta;
+	delta_put(sb, delta_ref);
+
+	trace("delta %u", delta);
+
+	/* Make sure the delta transition was done for current delta */
+	err = wait_for_transition(sb, delta);
+	if (err)
+		return err;
+	assert(delta_after_eq(sb->marshal_delta, delta));
+
+	/* Wait until committing the current delta */
+	err = wait_for_commit(sb, delta);
+	assert(err || delta_after_eq(sb->committed_delta, delta));
 
 	return err;
 }
 
-/* FIXME: quickly designed, rethink this. */
+#ifdef ATOMIC
+int force_rollup(struct sb *sb)
+{
+	return sync_current_delta(sb, FORCE_ROLLUP);
+}
+
 int force_delta(struct sb *sb)
 {
-	int err;
-
-	down_write(&sb->delta_lock);
-	err = do_commit(sb, NO_ROLLUP);
-	up_write(&sb->delta_lock);
-
-	return err;
+	return sync_current_delta(sb, NO_ROLLUP);
 }
 #endif /* !ATOMIC */
 
-int change_begin(struct sb *sb)
+void change_begin_atomic(struct sb *sb)
 {
-	down_read(&sb->delta_lock);
-	return 0;
+	assert(current->journal_info == NULL);
+	current->journal_info = delta_get(sb);
 }
 
 /* change_end() without starting do_commit(). Use this only if necessary. */
-int change_end_without_commit(struct sb *sb)
+void change_end_atomic(struct sb *sb)
 {
-	up_read(&sb->delta_lock);
-	return 0;
+	struct delta_ref *delta_ref = current->journal_info;
+	assert(delta_ref != NULL);
+	current->journal_info = NULL;
+	delta_put(sb, delta_ref);
+}
+
+static int need_delta(struct sb *sb)
+{
+	static unsigned crudehack;
+	return !(++crudehack % 10);
+}
+
+void change_begin(struct sb *sb)
+{
+	down_read(&sb->delta_lock);
+	change_begin_atomic(sb);
 }
 
 int change_end(struct sb *sb)
 {
 	int err = 0;
 
-	if (!need_delta(sb)) {
-		up_read(&sb->delta_lock);
-		return 0;
-	}
-	unsigned delta = sb->delta;
+	change_end_atomic(sb);
 	up_read(&sb->delta_lock);
 
-	down_write(&sb->delta_lock);
-	/* FIXME: error handling */
-	if (sb->delta == delta)
-		err = do_commit(sb, ALLOW_ROLLUP);
+	if (need_delta(sb))
+		try_delta_transition(sb);
 
-	/*
-	 * Check referencer of forked buffer was gone, and can free
-	 * FIXME: For now, although protecting this by ->delta_lock,
-	 * because easy to avoid race.  But probably, we would not
-	 * need to protect.
-	 */
-	free_forked_buffers(sb, 0);
-
-	up_write(&sb->delta_lock);
+	err = flush_pending_delta(sb);
 
 	return err;
 }
