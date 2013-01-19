@@ -275,7 +275,6 @@ struct sb {
 	unsigned lognext;	/* Index of next log block in log map */
 	struct buffer_head *logbuf; /* Cached log block */
 	unsigned char *logpos, *logtop; /* Where to emit next log entry */
-	struct mutex loglock;	/* serialize log entries (spinlock me) */
 
 	struct list_head orphan_add; /* defered orphan inode add list */
 	struct list_head orphan_del; /* defered orphan inode del list */
@@ -707,6 +706,9 @@ void setup_sb(struct sb *sb, struct disksuper *super);
 int load_sb(struct sb *sb);
 int save_sb(struct sb *sb);
 int apply_defered_bfree(struct sb *sb, u64 val);
+void tux3_start_backend(struct sb *sb);
+void tux3_end_backend(void);
+int tux3_under_backend(struct sb *sb);
 int tux3_init_flusher(struct sb *sb);
 void tux3_exit_flusher(struct sb *sb);
 int force_rollup(struct sb *sb);
