@@ -632,6 +632,7 @@ extern const struct address_space_operations tux_blk_aops;
 extern const struct address_space_operations tux_vol_aops;
 
 /* inode.c */
+int tux3_sync_file(struct file *file, loff_t start, loff_t end, int datasync);
 int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
 int tux3_setattr(struct dentry *dentry, struct iattr *iattr);
 
@@ -668,7 +669,6 @@ struct buffer_head *cursor_leafbuf(struct cursor *cursor);
 void release_cursor(struct cursor *cursor);
 struct cursor *alloc_cursor(struct btree *btree, int);
 void free_cursor(struct cursor *cursor);
-void cursor_push(struct cursor *cursor, struct buffer_head *buffer, struct index_entry *next);
 
 void init_btree(struct btree *btree, struct sb *sb, struct root root, struct btree_ops *ops);
 int alloc_empty_btree(struct btree *btree);
@@ -676,7 +676,6 @@ int free_empty_btree(struct btree *btree);
 struct buffer_head *new_leaf(struct btree *btree);
 tuxkey_t cursor_next_key(struct cursor *cursor);
 tuxkey_t cursor_this_key(struct cursor *cursor);
-int cursor_advance(struct cursor *cursor);
 int btree_probe(struct cursor *cursor, tuxkey_t key);
 typedef int (*btree_traverse_func_t)(struct btree *btree, tuxkey_t key_bottom,
 				     tuxkey_t key_limit, void *leaf,
