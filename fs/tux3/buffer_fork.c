@@ -75,6 +75,10 @@ static void free_forked_page(struct page *page)
 
 static inline int buffer_busy(struct buffer_head *buffer, int refcount)
 {
+	/*
+	 * Page didn't have dirty and writeback, so this buffer should
+	 * already be flushed. Check if reader is still using this.
+	 */
 	assert(!buffer_dirty(buffer));
 	assert(!buffer_async_write(buffer));
 	assert(!buffer_async_read(buffer));
@@ -109,17 +113,17 @@ static int is_freeable_forked(struct buffer_head *buffer, struct page *page)
 }
 
 /*
- * Try to free forked page. If it is called from umount or evict_inode
+ * Try to free forked page. (If it is called from umount or evict_inode
  * path, there should be no referencer. So we free forked page
- * forcefully.
+ * forcefully.)
  *
- * inode: If caller is evicting inode, pass inode. Otherwise NULL.
- * umount: If caller is umount path, 1. Otherwise 0.
+ * inode: Free only if page is related to this inode.
+ * force: If true, even if refcount != 0 try to free.
  *
  * FIXME: we need the better way, instead of polling the freeable
  * forked pages periodically.
  */
-void free_forked_buffers(struct sb *sb, struct inode *inode, int umount)
+void free_forked_buffers(struct sb *sb, struct inode *inode, int force)
 {
 	struct link free_list, *node, *prev, *n;
 
@@ -130,21 +134,41 @@ void free_forked_buffers(struct sb *sb, struct inode *inode, int umount)
 	link_for_each_safe(node, prev, n, &sb->forked_buffers) {
 		struct buffer_head *buffer = buffer_link_entry(node);
 		struct page *page = buffer->b_page;
-		int force = 0;
 
 		trace_on("buffer %p, page %p, count %u",
 			 buffer, page, page_count(page));
 
-		/* We have to free this forked page forcefully */
-		if (umount || (inode && inode->i_mapping == page->mapping))
-			force = 1;
+		if (inode) {
+			/* Free only if page is related to inode */
+			if (page->mapping != inode->i_mapping)
+				continue;
+		}
 
 #ifdef DISABLE_ASYNC_BACKEND
 		/* The page should already be submitted if no async frontend */
 		assert(!PageDirty(page));
 #endif
 		assert(!force || (!PageDirty(page) && !PageWriteback(page)));
-		/* I/O was submitted, and I/O was done? */
+
+		/*
+		 * I/O was submitted and I/O was done?
+		 *
+		 * NOTE: order of checking flags is important.
+		 *
+		 * free_forked_buffers	    bufvec_prepare_and_lock_page
+		 *	PageWriteback()
+		 *				TestSetPageWriteback()
+		 *				TestClearPageDirty()
+		 *	PageDirty()
+		 *	[missed both flags]
+		 *
+		 * Above order has race. So, we have to check "dirty"
+		 * at first, then check "writeback".
+		 *
+		 * FIXME: we would not want to depend on this fragile
+		 * way, and would want to use refcount simply to free
+		 * forked page.
+		 */
 		if (!PageDirty(page) && !PageWriteback(page)) {
 			/* All users were gone or force=1? */
 			if (force || is_freeable_forked(buffer, page)) {
