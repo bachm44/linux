@@ -79,8 +79,8 @@ LIBKLIB		= libklib/libklib.a
 ALL_LIBS	= $(LIBTUX3) $(LIBKLIB)
 
 # LIBTUX3 objects
-USER_OBJS	= current_task.o dir.o filemap.o inode.o namei.o super.o \
-	utility.o writeback.o
+USER_OBJS	= current_task.o dir.o filemap.o inode.o namei.o options.o \
+	super.o utility.o writeback.o
 KERN_OBJS	= ../balloc.o ../btree.o ../commit.o \
 	../dleaf.o ../dleaf2.o ../iattr.o ../ileaf.o \
 	../log.o ../orphan.o ../replay.o ../xattr.o
