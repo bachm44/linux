@@ -467,11 +467,37 @@ int tux3_flush_inode_internal(struct inode *inode, unsigned delta)
 	assert(tux3_is_inode_no_flush(inode));
 	assert(atomic_read(&inode->i_count) >= 1);
 
+	/*
+	 * Check dirty state roughly (possibly false positive. True
+	 * dirty state is in tuxnode->flags and per-delta dirty
+	 * buffers list) to avoid lock overhead.
+	 */
+	if (!(inode->i_state & I_DIRTY))
+		return 0;
+
 	err = tux3_flush_inode(inode, delta);
 	/* FIXME: error handling */
 	__tux3_clear_dirty_inode(inode, delta);
 
 	return err;
+}
+
+static int inode_inum_cmp(void *priv, struct list_head *a, struct list_head *b)
+{
+	struct tux3_inode *ta, *tb;
+	struct inode_delta_dirty *i_ddc;
+	unsigned delta = *(unsigned *)priv;
+
+	i_ddc = list_entry(a, struct inode_delta_dirty, dirty_list);
+	ta = i_ddc_to_inode(i_ddc, delta);
+	i_ddc = list_entry(b, struct inode_delta_dirty, dirty_list);
+	tb = i_ddc_to_inode(i_ddc, delta);
+
+	if (ta->inum < tb->inum)
+		return -1;
+	else if (ta->inum > tb->inum)
+		return 1;
+	return 0;
 }
 
 int tux3_flush_inodes(struct sb *sb, unsigned delta)
@@ -482,6 +508,9 @@ int tux3_flush_inodes(struct sb *sb, unsigned delta)
 	int err;
 
 	/* ->dirty_inodes owned by backend. No need to lock here */
+
+	/* Sort by tuxnode->inum. FIXME: do we want to sort? */
+	list_sort(&delta, dirty_inodes, inode_inum_cmp);
 
 	list_for_each_entry_safe(i_ddc, safe, dirty_inodes, dirty_list) {
 		struct tux3_inode *tuxnode = i_ddc_to_inode(i_ddc, delta);
