@@ -260,6 +260,8 @@ struct sb {
 	u64 freeinodes;		/* Number of free inode numbers. This is
 				 * including the deferred allocated inodes */
 	block_t volblocks, freeblocks, nextblock;
+	inum_t nextinum;	/* FIXME: temporary hack to avoid to find
+				 * same area in itable for free inum. */
 	unsigned entries_per_node; /* must be per-btree type, get rid of this */
 	unsigned version;	/* Currently mounted volume version view */
 
@@ -804,10 +806,10 @@ void tux3_inode_copy_attrs(struct inode *inode, unsigned delta);
 struct inode *tux_new_volmap(struct sb *sb);
 struct inode *tux_new_logmap(struct sb *sb);
 void del_defer_alloc_inum(struct inode *inode);
-struct inode *__tux_create_inode(struct inode *dir, inum_t goal,
-				 struct tux_iattr *iattr, dev_t rdev);
 struct inode *tux_create_inode(struct inode *dir, struct tux_iattr *iattr,
 			       dev_t rdev);
+struct inode *tux_create_specific_inode(struct inode *dir, inum_t inum,
+					struct tux_iattr *iattr, dev_t rdev);
 struct inode *tux3_iget(struct sb *sb, inum_t inum);
 int tux3_save_inode(struct inode *inode, struct tux3_iattr_data *idata,
 		    unsigned delta);
