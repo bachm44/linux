@@ -99,12 +99,24 @@ static int is_defer_alloc_inum(struct inode *inode)
 /* must hold itable->btree.lock */
 static int find_defer_alloc_inum(struct sb *sb, inum_t inum)
 {
+	/*
+	 * FIXME: temporary hack. We should replace this by efficient
+	 * one something like bitmap.
+	 */
+#if 0
 	struct tux3_inode *tuxnode;
 
 	list_for_each_entry(tuxnode, &sb->alloc_inodes, alloc_list) {
 		if (tuxnode->inum == inum)
 			return 1;
 	}
+#else
+	struct inode *tmp = tux3_ilookup_nowait(sb, inum);
+	if (tmp) {
+		iput(tmp);
+		return 1;
+	}
+#endif
 	return 0;
 }
 
@@ -249,6 +261,17 @@ static struct ialloc_policy ialloc_linear = {
 	.update	= ialloc_linear_update,
 };
 
+static int tux_test(struct inode *inode, void *data)
+{
+	return tux_inode(inode)->inum == *(inum_t *)data;
+}
+
+static int tux_set(struct inode *inode, void *data)
+{
+	tux_set_inum(inode, *(inum_t *)data);
+	return 0;
+}
+
 static int alloc_inum(struct inode *inode, struct ialloc_policy *policy,
 		      void *policy_data)
 {
@@ -269,10 +292,21 @@ static int alloc_inum(struct inode *inode, struct ialloc_policy *policy,
 		if (err)
 			goto error;
 
-		/* Is this inum already used by deferred inum allocation? */
-		if (!find_defer_alloc_inum(sb, goal))
+		/*
+		 * Is this inum already used by deferred inum allocation?
+		 *
+		 * FIXME: Can be nfsd race happened, or fs corruption.
+		 * And we would want to move this outside btree->lock.
+		 */
+		if (insert_inode_locked4(inode, goal, tux_test, &goal) >= 0)
 			break;
 
+		/*
+		 * Skip deferred allocate inums.
+		 *
+		 * FIXME: This is inefficient, we should replace with
+		 * better way.
+		 */
 		goal++;
 		while (find_defer_alloc_inum(sb, goal))
 			goal++;
@@ -306,17 +340,6 @@ error:
 	return err;
 }
 
-static int tux_test(struct inode *inode, void *data)
-{
-	return tux_inode(inode)->inum == *(inum_t *)data;
-}
-
-static int tux_set(struct inode *inode, void *data)
-{
-	tux_set_inum(inode, *(inum_t *)data);
-	return 0;
-}
-
 static struct inode *
 __tux_create_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev,
 		   struct ialloc_policy *policy, void *policy_data)
@@ -333,6 +356,11 @@ __tux_create_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev,
 		iput(inode);
 		return ERR_PTR(err);
 	}
+#if 0
+	/*
+	 * FIXME: temporary hack. We shouldn't insert inode to hash
+	 * in alloc_inum before initializing completely.
+	 */
 	inum_t inum = tux_inode(inode)->inum;
 	if (insert_inode_locked4(inode, inum, tux_test, &inum) < 0) {
 		/* Can be nfsd race happened, or fs corruption. */
@@ -341,6 +369,7 @@ __tux_create_inode(struct inode *dir, struct tux_iattr *iattr, dev_t rdev,
 		iput(inode);
 		return ERR_PTR(-EIO);
 	}
+#endif
 	/*
 	 * The unhashed inode ignores mark_inode_dirty(), so it should
 	 * be called after insert_inode_hash().
@@ -932,6 +961,8 @@ static void tux_setup_inode(struct inode *inode)
 
 	assert(tux_inode(inode)->inum != TUX_INVALID_INO);
 
+	tux3_set_mapping_bdi(inode);
+
 //	inode->i_generation = 0;
 //	inode->i_flags = 0;
 
@@ -1005,6 +1036,18 @@ static void tux_setup_inode(struct inode *inode)
 			break;
 		}
 		mapping_set_gfp_mask(inode->i_mapping, gfp_mask);
+
+		/*
+		 * FIXME: volmap inode is not always dirty. Because
+		 * tux3_mark_buffer_rollup() doesn't mark tuxnode->flags
+		 * as dirty. But, it marks inode->i_state as dirty,
+		 * so this is called to prevent to add inode into
+		 * dirty list by replay for rollup.
+		 *
+		 * See, FIXME in tux3_mark_buffer_rollup().
+		 */
+		if (inum == TUX_BITMAP_INO || inum == TUX_VOLMAP_INO)
+			tux3_set_inode_always_dirty(inode);
 		break;
 	}
 	default:
