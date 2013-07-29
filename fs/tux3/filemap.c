@@ -215,7 +215,7 @@ static int map_region1(struct inode *inode, block_t start, unsigned count,
 		/* Change the seg[] to redirect this region as one extent */
 		count = 0;
 		for (int i = 0; i < segs; i++) {
-			/* Logging overwrited extents as free */
+			/* Logging overwritten extents as free */
 			if (seg[i].state != BLOCK_SEG_HOLE)
 				map_bfree(inode, seg[i].block, seg[i].count);
 			count += seg[i].count;
@@ -534,7 +534,7 @@ static int map_region2(struct inode *inode, block_t start, unsigned count,
 		/* Change the seg[] to redirect this region as one extent */
 		unsigned total = 0;
 		for (int i = 0; i < segs; i++) {
-			/* Logging overwrited extents as free */
+			/* Logging overwritten extents as free */
 			if (seg[i].state != BLOCK_SEG_HOLE)
 				map_bfree(inode, seg[i].block, seg[i].count);
 			total += seg[i].count;
@@ -638,6 +638,7 @@ int tux3_filemap_redirect_io(int rw, struct bufvec *bufvec)
 
 #ifdef __KERNEL__
 #include <linux/mpage.h>
+#include <linux/swap.h>		/* for mark_page_accessed() */
 
 static int filemap_extent_io(enum map_mode mode, int rw, struct bufvec *bufvec)
 {
@@ -865,7 +866,7 @@ struct buffer_head *blockread(struct address_space *mapping, block_t iblock)
 
 	bh = find_get_buffer(mapping, index, offset);
 	if (bh)
-		return bh;
+		goto out;
 
 	err = -ENOMEM;
 	/* FIXME: don't need to find again. Just try to allocate and insert */
@@ -891,6 +892,9 @@ struct buffer_head *blockread(struct address_space *mapping, block_t iblock)
 	}
 	page_cache_release(page);
 	assert(buffer_uptodate(bh));
+
+out:
+	touch_buffer(bh);
 
 	return bh;
 
@@ -934,7 +938,7 @@ struct buffer_head *blockget(struct address_space *mapping, block_t iblock)
 	 * FIXME: now all read is using ->readpage(), this means it
 	 * reads whole page with lock_page(), i.e. read non-target
 	 * block.  So, we have to hold to modify data to prevent race
-	 * with ->readpage(). But we are not holding lock_lock().
+	 * with ->readpage(). But we are not holding lock_page().
 	 *
 	 *          cpu0                            cpu1
 	 *					bufferA = blockget()
@@ -949,11 +953,23 @@ struct buffer_head *blockget(struct address_space *mapping, block_t iblock)
 	 *
 	 * So, this set uptodate before unlock_page. But, we should
 	 * use submit_bh() or similar to read block, instead.
+	 *
+	 * FIXME: another issue of blockread/blockget(). If those
+	 * functions was used for volmap, we might read blocks nearby
+	 * the target block. But nearby blocks can be allocated for
+	 * data pages, furthermore nearby blocks can be in-flight I/O.
+	 *
+	 * So, nearby blocks on volmap can be non-volmap blocks, and
+	 * it would just increase amount of I/O size, and seeks.
+	 *
+	 * Like above said, we should use submit_bh() or similar.
 	 */
 	set_buffer_uptodate(bh);
 
 	unlock_page(page);
 	page_cache_release(page);
+
+	touch_buffer(bh);
 
 	return bh;
 }
