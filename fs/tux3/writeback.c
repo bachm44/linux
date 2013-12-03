@@ -122,6 +122,57 @@ static inline unsigned tux3_dirty_flags(struct inode *inode, unsigned delta)
 	return ret;
 }
 
+/*
+ * We don't use i_wb_list though, bdi flusher checks this via
+ * wb_has_dirty_io(). So if inode become clean, we remove inode from
+ * it.
+ */
+static inline void tux3_inode_wb_lock(struct inode *inode)
+{
+#ifdef __KERNEL__
+	struct backing_dev_info *bdi = inode->i_sb->s_bdi;
+	spin_lock(&bdi->wb.list_lock);
+#endif
+}
+
+static inline void tux3_inode_wb_unlock(struct inode *inode)
+{
+#ifdef __KERNEL__
+	struct backing_dev_info *bdi = inode->i_sb->s_bdi;
+	spin_unlock(&bdi->wb.list_lock);
+#endif
+}
+
+static inline void tux3_inode_wb_list_del(struct inode *inode)
+{
+#ifdef __KERNEL__
+	list_del_init(&inode->i_wb_list);
+#endif
+}
+
+/*
+ * __mark_inode_dirty() doesn't know about delta boundary (we don't
+ * clear I_DIRTY before flush, in order to prevent the inode to be
+ * freed). So, if inode was re-dirtied for frontend delta while
+ * flushing old delta, ->dirtied_when may not be updated by
+ * __mark_inode_dirty() forever.
+ *
+ * Although we don't use ->dirtied_when, bdi flusher uses
+ * ->dirtied_when to decide flush timing, so we have to update
+ * ->dirtied_when ourself.
+ */
+static void tux3_inode_wb_update_dirtied_when(struct inode *inode)
+{
+#ifdef __KERNEL__
+	/* Take lock only if we have to update. */
+	struct backing_dev_info *bdi = inode->i_sb->s_bdi;
+	tux3_inode_wb_lock(inode);
+	inode->dirtied_when = jiffies;
+	list_move(&inode->i_wb_list, &bdi->wb.b_dirty);
+	tux3_inode_wb_unlock(inode);
+#endif
+}
+
 /* This is hook of __mark_inode_dirty() and called I_DIRTY_PAGES too */
 void tux3_dirty_inode(struct inode *inode, int flags)
 {
@@ -131,7 +182,7 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 	unsigned mask = tux3_dirty_mask(flags, delta);
 	struct sb_delta_dirty *s_ddc;
 	struct inode_delta_dirty *i_ddc;
-	int was_clean = 0;
+	int re_dirtied = 0, initial_dirty = 0;
 
 	if ((tuxnode->flags & mask) == mask)
 		return;
@@ -155,20 +206,30 @@ void tux3_dirty_inode(struct inode *inode, int flags)
 
 		if (s_ddc) {
 			spin_lock(&sb->dirty_inodes_lock);
-			was_clean = list_empty(&s_ddc->dirty_inodes);
-			if (list_empty(&i_ddc->dirty_list))
+			initial_dirty = list_empty(&s_ddc->dirty_inodes);
+			if (list_empty(&i_ddc->dirty_list)) {
 				list_add_tail(&i_ddc->dirty_list,
 					      &s_ddc->dirty_inodes);
+				/* The inode was re-dirtied while flushing. */
+				re_dirtied = (inode->i_state & I_DIRTY);
+			}
 			spin_unlock(&sb->dirty_inodes_lock);
 		}
 	}
 	spin_unlock(&tuxnode->lock);
 
 	/*
+	 * Update ->i_wb_list and ->dirtied_when if need. See comment
+	 * of tux3_inode_wb_update_dirtied_when().
+	 */
+	if (re_dirtied)
+		tux3_inode_wb_update_dirtied_when(inode);
+
+	/*
 	 * If dirty inode list was empty, we start the timer for
 	 * periodical flush.
 	 */
-	if (was_clean)
+	if (initial_dirty)
 		tux3_start_periodical_flusher(sb);
 }
 
@@ -195,33 +256,22 @@ void tux3_mark_btree_dirty(struct btree *btree)
 #include "writeback_xattrfork.c"
 
 /*
- * We don't use i_wb_list though, bdi flusher checks this via
- * wb_has_dirty_io(). So if inode become clean, we remove inode from it.
+ * Clear dirty flags for delta (caller must hold inode->i_lock/tuxnode->lock).
+ *
+ * Note: This can race with *_mark_inode_dirty().
+ *
+ *        cpu0                                 cpu1
+ * __tux3_mark_inode_dirty()
+ *     tux3_dirty_inode()
+ *         mark delta dirty
+ *                                      tux3_clear_dirty_inode_nolock()
+ *                                           clear core dirty and delta
+ *     __mark_inode_dirty()
+ *         mark core dirty
+ *
+ * For this race, we can't use this to clear dirty for frontend delta
+ * (exception is the points which has no race like umount).
  */
-static inline void tux3_inode_wb_lock(struct inode *inode)
-{
-#ifdef __KERNEL__
-	struct backing_dev_info *bdi = inode->i_sb->s_bdi;
-	spin_lock(&bdi->wb.list_lock);
-#endif
-}
-
-static inline void tux3_inode_wb_unlock(struct inode *inode)
-{
-#ifdef __KERNEL__
-	struct backing_dev_info *bdi = inode->i_sb->s_bdi;
-	spin_unlock(&bdi->wb.list_lock);
-#endif
-}
-
-static inline void tux3_inode_wb_list_del(struct inode *inode)
-{
-#ifdef __KERNEL__
-	list_del_init(&inode->i_wb_list);
-#endif
-}
-
-/* Clear dirty flags for delta (caller must hold inode->i_lock/tuxnode->lock) */
 static void tux3_clear_dirty_inode_nolock(struct inode *inode, unsigned delta,
 					  int frontend)
 {
@@ -248,10 +298,8 @@ static void tux3_clear_dirty_inode_nolock(struct inode *inode, unsigned delta,
 			spin_unlock(&sb->dirty_inodes_lock);
 	}
 
-	/* Update inode state */
-	if (tuxnode->flags & ~NON_DIRTY_FLAGS)
-		inode->i_state |= I_DIRTY;
-	else {
+	/* Update state if inode isn't dirty anymore */
+	if (!(tuxnode->flags & ~NON_DIRTY_FLAGS)) {
 		inode->i_state &= ~I_DIRTY;
 		tux3_inode_wb_list_del(inode);
 	}
@@ -270,7 +318,10 @@ static void __tux3_clear_dirty_inode(struct inode *inode, unsigned delta)
 	tux3_inode_wb_unlock(inode);
 }
 
-/* Clear dirty flags for frontend delta */
+/*
+ * Clear dirty flags for frontend delta.
+ * Note: see comment of tux3_clear_dirty_inode_nolock)
+ */
 void tux3_clear_dirty_inode(struct inode *inode)
 {
 	struct tux3_inode *tuxnode = tux_inode(inode);
@@ -322,10 +373,8 @@ void __tux3_mark_buffer_dirty(struct buffer_head *buffer, unsigned delta)
 	       PageLocked(buffer->b_page));
 #endif
 
-	tux3_set_buffer_dirty(mapping(inode), buffer, delta);
-	/* FIXME: we need to dirty inode only if buffer became
-	 * dirty. However, tux3_set_buffer_dirty doesn't provide it */
-	__tux3_mark_inode_dirty(inode, I_DIRTY_PAGES);
+	if (tux3_set_buffer_dirty(mapping(inode), buffer, delta))
+		__tux3_mark_inode_dirty(inode, I_DIRTY_PAGES);
 }
 
 /*
@@ -372,9 +421,12 @@ void tux3_mark_buffer_unify(struct buffer_head *buffer)
 	tux3_set_buffer_dirty_list(mapping(inode), buffer, sb->unify,
 				   &sb->unify_buffers);
 	/*
-	 * FIXME: we don't call __tux3_mark_buffer_dirty() here, but
-	 * mark_buffer_dirty() marks inode as I_DIRTY_PAGES. This
-	 * makes inconsistent state on inode->i_state and tuxnode->flags.
+	 * We don't call __tux3_mark_inode_dirty() here, because unify
+	 * is not flushed per-delta. So, marking volmap as dirty just
+	 * bothers us.
+	 *
+	 * Instead, we call __tux3_mark_inode_dirty() when process
+	 * unify buffers in unify_log().
 	 */
 }
 
