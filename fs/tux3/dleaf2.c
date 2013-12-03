@@ -137,8 +137,27 @@ static int dleaf2_can_free(struct btree *btree, void *leaf)
 	return 1;
 }
 
+static void __dleaf2_dump(struct btree *btree, struct dleaf2 *dleaf,
+			  const char *prefix)
+{
+	if (!tux3_trace)
+		return;
+
+	unsigned i;
+	__tux3_dbg("%sdleaf %p, magic %x, count %u\n", prefix,
+		   dleaf, be16_to_cpu(dleaf->magic), be16_to_cpu(dleaf->count));
+	for (i = 0; i < be16_to_cpu(dleaf->count); i++) {
+		struct extent ex;
+		get_extent(dleaf->table + i, &ex);
+		__tux3_dbg("  logical %Lu, physical %Lu, version %u\n",
+			   ex.logical, ex.physical, ex.version);
+	}
+}
+
 static void dleaf2_dump(struct btree *btree, void *leaf)
 {
+	struct dleaf2 *dleaf = leaf;
+	__dleaf2_dump(btree, dleaf, "");
 }
 
 /* Lookup logical address in diskextent2 <= index */
@@ -147,7 +166,14 @@ dleaf2_lookup_index(struct btree *btree, struct dleaf2 *dleaf, tuxkey_t index)
 {
 	struct diskextent2 *dex = dleaf->table;
 	struct diskextent2 *limit = dex + be16_to_cpu(dleaf->count);
-
+#if 1
+	/* Paranoia check: last should be sentinel (hole) */
+	if (dleaf->count) {
+		struct extent ex;
+		get_extent(limit - 1, &ex);
+		assert(ex.physical == 0);
+	}
+#endif
 	/* FIXME: binsearch here */
 	while (dex < limit) {
 		if (index == get_logical(dex))
@@ -158,13 +184,6 @@ dleaf2_lookup_index(struct btree *btree, struct dleaf2 *dleaf, tuxkey_t index)
 			return dex - 1;
 		}
 		dex++;
-	}
-
-	/* Not found - last should be sentinel (hole) */
-	if (dleaf->count) {
-		struct extent ex;
-		get_extent(dex - 1, &ex);
-		assert(ex.physical == 0);
 	}
 
 	return dex;
@@ -560,7 +579,7 @@ static int dleaf2_read(struct btree *btree, tuxkey_t key_bottom,
 	struct extent next;
 	block_t physical;
 
-	if (rq->seg_idx >= rq->seg_max)
+	if (rq->seg_cnt >= rq->seg_max)
 		return 0;
 
 	dex_limit = dleaf->table + be16_to_cpu(dleaf->count);
@@ -568,11 +587,6 @@ static int dleaf2_read(struct btree *btree, tuxkey_t key_bottom,
 	/* Lookup the extent is including index */
 	dex = dleaf2_lookup_index(btree, dleaf, key->start);
 	if (dex >= dex_limit - 1) {
-		/* paranoia check */
-		if (dex < dex_limit) {
-			get_extent(dex_limit - 1, &next);
-			assert(next.physical == 0);
-		}
 		/* If sentinel, fill by bottom key */
 		goto fill_seg;
 	}
@@ -585,7 +599,7 @@ static int dleaf2_read(struct btree *btree, tuxkey_t key_bottom,
 	dex++;
 
 	do {
-		struct block_segment *seg = rq->seg + rq->seg_idx;
+		struct block_segment *seg = rq->seg + rq->seg_cnt;
 
 		get_extent(dex, &next);
 
@@ -602,14 +616,14 @@ static int dleaf2_read(struct btree *btree, tuxkey_t key_bottom,
 		physical = next.physical;
 		key->start += seg->count;
 		key->len -= seg->count;
-		rq->seg_idx++;
+		rq->seg_cnt++;
 		dex++;
-	} while (key->len && rq->seg_idx < rq->seg_max && dex < dex_limit);
+	} while (key->len && rq->seg_cnt < rq->seg_max && dex < dex_limit);
 
 fill_seg:
 	/* Between sentinel and key_limit is hole */
-	if (key->start < key_limit && key->len && rq->seg_idx < rq->seg_max) {
-		struct block_segment *seg = rq->seg + rq->seg_idx;
+	if (key->start < key_limit && key->len && rq->seg_cnt < rq->seg_max) {
+		struct block_segment *seg = rq->seg + rq->seg_cnt;
 
 		seg->count = min_t(tuxkey_t, key->len, key_limit - key->start);
 		seg->block = 0;
@@ -617,7 +631,7 @@ fill_seg:
 
 		key->start += seg->count;
 		key->len -= seg->count;
-		rq->seg_idx++;
+		rq->seg_cnt++;
 	}
 
 	return 0;
