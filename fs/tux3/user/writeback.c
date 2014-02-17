@@ -1,7 +1,7 @@
 #include "tux3user.h"
 
 #ifndef trace
-#define trace trace_on
+#define trace trace_off
 #endif
 
 #include "../writeback.c"
