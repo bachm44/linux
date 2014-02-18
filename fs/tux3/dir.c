@@ -96,8 +96,8 @@ static unsigned char tux_type_by_mode[S_IFMT >> STAT_SHIFT] = {
 		      "zero length entry at inum %Lu, block %Lu",	\
 		      tux_inode(dir)->inum, block)
 
-static void tux_update_entry(struct buffer_head *buffer, tux_dirent *entry,
-			     inum_t inum, umode_t mode)
+void tux_set_entry(struct buffer_head *buffer, tux_dirent *entry,
+		   inum_t inum, umode_t mode)
 {
 	entry->inum = cpu_to_be64(inum);
 	entry->type = tux_type_by_mode[(mode & S_IFMT) >> STAT_SHIFT];
@@ -110,19 +110,17 @@ static void tux_update_entry(struct buffer_head *buffer, tux_dirent *entry,
  * "..". rename() shouldn't update ->mtime for ".." usually.
  */
 void tux_update_dirent(struct inode *dir, struct buffer_head *buffer,
-		       tux_dirent *entry, struct inode *new_inode)
+		       tux_dirent *entry, struct inode *inode)
 {
-	inum_t new_inum = tux_inode(new_inode)->inum;
-
-	tux_update_entry(buffer, entry, new_inum, new_inode->i_mode);
+	tux_set_entry(buffer, entry, tux_inode(inode)->inum, inode->i_mode);
 
 	tux3_iattrdirty(dir);
 	dir->i_mtime = dir->i_ctime = gettime();
 	tux3_mark_inode_dirty(dir);
 }
 
-loff_t tux_create_entry(struct inode *dir, const char *name, unsigned len,
-			inum_t inum, umode_t mode, loff_t *size)
+loff_t tux_alloc_entry(struct inode *dir, const char *name, unsigned len,
+		       loff_t *size, struct buffer_head **hold)
 {
 	unsigned delta = tux3_get_current_delta();
 	struct sb *sb = tux_sb(dir->i_sb);
@@ -195,23 +193,32 @@ create:
 	entry->name_len = len;
 	memcpy(entry->name, name, len);
 	offset = (void *)entry - bufdata(clone);
-	/* this releases buffer */
-	tux_update_entry(clone, entry, inum, mode);
 
+	*hold = clone;
 	return (block << sb->blockbits) + offset; /* only for xattr create */
 }
 
-int tux_create_dirent(struct inode *dir, const struct qstr *qstr, inum_t inum,
-		      umode_t mode)
+int tux_create_dirent(struct inode *dir, const struct qstr *qstr,
+		      struct inode *inode)
 {
-	loff_t where;
+	inum_t inum = tux_inode(inode)->inum;
+	umode_t mode = inode->i_mode;
+	struct buffer_head *buffer;
+	loff_t i_size, where;
 
-	tux3_iattrdirty(dir);
-
-	where = tux_create_entry(dir, (const char *)qstr->name, qstr->len, inum,
-				 mode, &dir->i_size);
+	/* Holding dir->i_mutex, so no i_size_read() */
+	i_size = dir->i_size;
+	where = tux_alloc_entry(dir, (const char *)qstr->name, qstr->len,
+				&i_size, &buffer);
 	if (where < 0)
 		return where;
+
+	/* This releases buffer */
+	tux_set_entry(buffer, bufdata(buffer) + (where & tux_sb(dir->i_sb)->blockmask), inum, mode);
+
+	tux3_iattrdirty(dir);
+	if (dir->i_size != i_size)
+		i_size_write(dir, i_size);
 
 	dir->i_mtime = dir->i_ctime = gettime();
 	tux3_mark_inode_dirty(dir);
@@ -258,6 +265,7 @@ error:
 tux_dirent *tux_find_dirent(struct inode *dir, const struct qstr *qstr,
 			    struct buffer_head **result)
 {
+	/* Holding dir->i_mutex, so no i_size_read() */
 	return tux_find_entry(dir, (const char *)qstr->name, qstr->len,
 			      result, dir->i_size);
 }
