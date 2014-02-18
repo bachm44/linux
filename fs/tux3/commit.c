@@ -256,6 +256,11 @@ static int unify_log(struct sb *sb)
 	tux3_flush_inode_internal(sb->bitmap, unify, REQ_META);
 	trace("< done bitmap %u", unify);
 
+	/* Flush bitmap */
+	trace("> flush countmap %u", unify);
+	tux3_flush_inode_internal(sb->countmap, unify, REQ_META);
+	trace("< done countmap %u", unify);
+
 	trace("> apply orphan inodes %u", unify);
 	{
 		int err;
@@ -309,6 +314,15 @@ static int stage_delta(struct sb *sb, unsigned delta)
 
 static int write_btree(struct sb *sb, unsigned delta)
 {
+	/*
+	 * If page is still dirtied by unify buffer,
+	 * tux3_mark_buffer_atomic() doesn't dirty inode for delta, so
+	 * we make sure volmap is dirty for delta buffers here.
+	 *
+	 * FIXME: better way to do?
+	 */
+	__tux3_mark_inode_dirty(sb->volmap, I_DIRTY_PAGES);
+
 	/*
 	 * Flush leaves (and if there is unify, bnodes too) blocks.
 	 * FIXME: Now we are using TUX3_INIT_DELTA for leaves. Do
@@ -620,6 +634,7 @@ unsigned tux3_inode_delta(struct inode *inode)
 		delta = TUX3_INIT_DELTA;
 		break;
 	case TUX_BITMAP_INO:
+	case TUX_COUNTMAP_INO:
 		delta = tux_sb(inode->i_sb)->unify;
 		break;
 	default:
