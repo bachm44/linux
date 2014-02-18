@@ -65,6 +65,31 @@ static int countmap_add(struct sb *sb, block_t group, int count)
 	return 0;
 }
 
+static int countmap_add_segment(struct sb *sb, block_t start, unsigned blocks,
+				int set)
+{
+	block_t group = start >> sb->groupbits;
+
+	/* Compile option: support cross-group segments */
+	if (1 && group != (start + blocks) >> sb->groupbits) {
+		unsigned groupsize = 1 << sb->groupbits;
+		unsigned groupmask = groupsize - 1;
+
+		while (blocks) {
+			unsigned grouplen = (~start & groupmask) + 1;
+			int len = min(grouplen, blocks);
+			int err = countmap_add(sb, group++, set ? len : -len);
+			if (err)
+				return err;
+			start += len;
+			blocks -= len;
+		}
+		return 0;
+	}
+
+	return countmap_add(sb, group, set ? blocks : -blocks);
+}
+
 void countmap_put(struct countmap_pin *pin)
 {
 	if (pin->buffer) {
@@ -72,6 +97,34 @@ void countmap_put(struct countmap_pin *pin)
 		pin->buffer = NULL;
 	}
 }
+
+static int countmap_used(struct sb *sb, block_t group)
+{
+	unsigned offset = group & (sb->blockmask >> 1);
+	__be16 *p;
+	int err;
+
+	err = countmap_load(sb, group);
+	if (err)
+		return err;
+
+	p = bufdata(sb->countmap_pin.buffer);
+	return be16_to_cpup(p + offset);
+}
+
+#ifndef __KERNEL__
+void countmap_dump(struct sb *sb, block_t start, block_t count)
+{
+	unsigned groupbits = sb->groupbits, groupsize = 1 << groupbits;
+
+	for (block_t group = start; group < count; group++) {
+		block_t block = group << groupbits;
+		block_t blocks = min_t(block_t, sb->volblocks - block, groupsize);
+		__tux3_dbg("%Lu: %i used, ", group, countmap_used(sb, group));
+		bitmap_dump(sb->bitmap, block, blocks);
+	}
+}
+#endif /* !__KERNEL__ */
 
 /*
  * Bitmap
@@ -96,7 +149,7 @@ block_t count_range(struct inode *inode, block_t start, block_t count)
 	unsigned offset = (start & mapmask) >> 3;
 
 	for (block_t block = start >> mapshift; block < blocks; block++) {
-		//trace("count block %x/%x", block, blocks);
+		trace_off("count block %x/%x", block, blocks);
 		struct buffer_head *buffer = blockread(mapping(inode), block);
 		if (!buffer)
 			return -1;
@@ -113,65 +166,56 @@ block_t count_range(struct inode *inode, block_t start, block_t count)
 	return total;
 }
 
-block_t bitmap_dump(struct inode *inode, block_t start, block_t count)
+void bitmap_dump(struct inode *inode, block_t start, block_t count)
 {
+	enum { show_used = 0 };
 	struct sb *sb = tux_sb(inode->i_sb);
 	unsigned mapshift = sb->blockbits + 3;
-	unsigned mapmask = (1 << mapshift) - 1;
-	block_t limit = start + count;
-	block_t blocks = (limit + mapmask) >> mapshift, active = 0;
-	unsigned offset = (start & mapmask) >> 3;
-	unsigned startbit = start & 7;
-	block_t tail = (count + startbit + 7) >> 3, begin = -1;
+	unsigned mapsize = 1 << mapshift;
+	unsigned mapmask = mapsize - 1;
+	unsigned offset = (start & mapmask) >> 3, bit = start & 7, total = 0;
+	block_t limit = start + count, blocks = (limit + mapmask) >> mapshift;
+	block_t tail = (count + bit + 7) >> 3, begin = -1;
 
-	__tux3_dbg("%Ld bitmap blocks:\n", blocks);
+	__tux3_dbg("%s regions in %Lu/%Lu: ", show_used ? "used" : "free", start, count);
 	for (block_t block = start >> mapshift; block < blocks; block++) {
-		int ended = 0, any = 0;
 		struct buffer_head *buffer = blockread(mapping(inode), block);
-		if (!buffer)
-			return -1;
+		assert(buffer);
 		unsigned bytes = sb->blocksize - offset;
 		if (bytes > tail)
 			bytes = tail;
-		unsigned char *p = bufdata(buffer) + offset, *top = p + bytes;
-		for (; p < top; p++, startbit = 0) {
+		unsigned char *data = bufdata(buffer), *p = data + offset, *top = p + bytes;
+		for (; p < top; p++, bit = 0) {
 			unsigned c = *p;
-			if (!any && c)
-				__tux3_dbg("[%Lx] ", block);
-			any |= c;
-			if ((!c && begin < 0) || (c == 0xff && begin >= 0))
+			if ((!c && ((begin >= 0) ^ show_used)))
 				continue;
-			for (int i = startbit, mask = 1 << startbit; i < 8; i++, mask <<= 1) {
-				if (!(c & mask) == (begin < 0))
+			if (((c == 0xff) && ((begin < 0) ^ show_used)))
+				continue;
+			for (int i = bit, mask = 1 << bit; i < 8; i++, mask <<= 1) {
+				if (!(c & mask) ^ (begin < 0) ^ show_used)
 					continue;
-				block_t found = i + (((void *)p - bufdata(buffer)) << 3) + (block << mapshift);
-				if (begin < 0)
+				block_t found = i + ((p - data) << 3) + (block << mapshift);
+				if (found == limit)
+					break;
+				if (begin < 0) {
+					__tux3_dbg("%Lu", found);
 					begin = found;
-				else {
-					if ((begin >> mapshift) != block)
-						__tux3_dbg("-%Lx ", found - 1);
-					else if (begin == found - 1)
-						__tux3_dbg("%Lx ", begin);
-					else
-						__tux3_dbg("%Lx-%Lx ", begin, found - 1);
+					total++;
+				} else {
+					__tux3_dbg("/%Lu ", found - begin);
 					begin = -1;
-					ended++;
 				}
 			}
 		}
-		active += !!any;
 		blockput(buffer);
 		tail -= bytes;
 		offset = 0;
-		if (begin >= 0)
-			__tux3_dbg("%Lx-", begin);
-		if (any)
-			__tux3_dbg("\n");
 	}
-	__tux3_dbg("(%Ld active)\n", active);
-	return -1;
+	if ((begin >= 0))
+		__tux3_dbg("/%Lu ", start + count - begin);
+	__tux3_dbg("(%u)\n", total);
 }
-#endif
+#endif /* !__KERNEL__ */
 
 /*
  * Modify bits on one block, then adjust ->freeblocks.
@@ -224,6 +268,7 @@ static int __bitmap_modify(struct sb *sb, block_t start, unsigned blocks,
 	unsigned mapmask = mapsize - 1;
 	unsigned mapoffset = start & mapmask;
 	block_t mapblock, mapblocks = (start + blocks + mapmask) >> mapshift;
+	unsigned orig_blocks = blocks;
 
 	assert(blocks > 0);
 	assert(start + blocks <= sb->volblocks);
@@ -236,8 +281,7 @@ static int __bitmap_modify(struct sb *sb, block_t start, unsigned blocks,
 		buffer = blockread(mapping(bitmap), mapblock);
 		if (!buffer) {
 			tux3_err(sb, "block read failed");
-			// !!! error return sucks here
-			return -EIO;
+			return -EIO; /* FIXME: error handling */
 		}
 
 		len = min(mapsize - mapoffset, blocks);
@@ -247,22 +291,20 @@ static int __bitmap_modify(struct sb *sb, block_t start, unsigned blocks,
 			tux3_fs_error(sb, "%s: start 0x%Lx, count %x",
 				      set ? "already allocated" : "double free",
 				      start, blocks);
-
-			return -EIO;	/* FIXME: error code? */
+			return -EIO; /* FIXME: error handling */
 		}
 
 		err = bitmap_modify_bits(sb, buffer, mapoffset, len, set);
 		if (err) {
 			blockput(buffer);
-			/* FIXME: error handling */
-			return err;
+			return err; /* FIXME: error handling */
 		}
 
 		mapoffset = 0;
 		blocks -= len;
 	}
 
-	return countmap_add(sb, start >> sb->groupbits, set ? blocks : -blocks);
+	return countmap_add_segment(sb, start, orig_blocks, set);
 }
 
 static int bitmap_modify(struct sb *sb, block_t start, unsigned blocks, int set)
@@ -373,8 +415,16 @@ int balloc_find_range(struct sb *sb,
 }
 
 /*
- * Allocate block segments from entire volume.  Wrap to bottom of
- * volume if needed.
+ * Allocate block segments from entire volume.  Wrap around volume if needed.
+ * Returns negative if error, zero if at least one block found
+ *
+ * Scan entire volume exactly once. Start at current goal, continue to end
+ * of group, then continue scanning a group at a time, wrapping around to
+ * volume base if necessary. Skip any groups with less than some threshold
+ * of free blocks, depending on original request size. The first and last
+ * partial groups are scanned regardless of threshold in the first pass
+ * and never in the second pass. The second pass scans groups skipped in
+ * the first pass that are not completely full.
  *
  * return value:
  * < 0 - error
@@ -384,31 +434,70 @@ int balloc_find(struct sb *sb,
 	struct block_segment *seg, int maxsegs, int *segs,
 	unsigned *blocks)
 {
-	block_t goal = sb->nextblock, volsize = sb->volblocks;
-	int err, newsegs = 0;
+	block_t goal = sb->nextblock, volsize = sb->volblocks, start = goal;
+	block_t topgroup = volsize >> sb->groupbits;
+	unsigned groupsize = 1 << sb->groupbits, groupmask = groupsize - 1;
+	unsigned need = *blocks;
+	unsigned threshold = min(need, groupsize >> 2);
+	int err, newsegs = 0, pass = 0;
 
-	err = balloc_find_range(sb, seg, maxsegs, &newsegs, goal,
-				volsize - goal, blocks);
-	trace("=> try0: segs = %d, blocks = %u", newsegs, *blocks);
-	if (err)
-		return err;
+	trace("scan volume for %u blocks, goal = %Lu", need, goal);
+	trace("groupsize = %u, topgroup = %Lu, threshold = %u",
+	      groupsize, topgroup, threshold);
+	//bitmap_dump(sb->bitmap, 0, volsize);
+	//groups_dump(sb, 0, (volsize + groupmask) >> sb->groupbits);
 
-	if (*blocks && newsegs < maxsegs) {
-		err = balloc_find_range(sb, seg, maxsegs, &newsegs, 0, goal,
-					blocks);
-		trace("=> try1: segs = %d, blocks = %u", newsegs, *blocks);
-		if (err < 0)
-			return err;
-	}
+	do {
+		block_t tail = volsize;
+		trace("--- pass%i ---", pass + 1);
+		trace("group %Lu: start", goal >> sb->groupbits);
+		do {
+			block_t group = goal >> sb->groupbits;
+			block_t next = goal + groupsize;
+			int skip = pass > 0, top = group == topgroup;
+			if (tail != volsize) {
+				unsigned size, used;
 
-	if (!newsegs) {
-		/* FIXME: This is for debugging. Remove this */
-		tux3_warn(sb, "couldn't balloc: blocks %u, freeblocks %Lu",
-			  *blocks, sb->freeblocks);
-		return -ENOSPC;
-	}
+				if (tail < groupsize && goal + tail == start) {
+					trace("group %Lu: back to start",
+					      goal >> sb->groupbits);
+					next = goal + tail;
+					goto last;
+				}
+				size = top ? (volsize & groupmask) : groupsize;
+				used = countmap_used(sb, group);
+				trace("group %Lu: check used", group);
+				assert(used <= size);
+				skip = used == size || (size - used < threshold) ^ pass;
+				next = goal + size;
+			}
+			next &= ~groupmask;
+			if (top)
+				next = volsize;
+last:
+			trace("goal = %Lu, next = %Lu, skip = %i",
+			      goal, next, skip);
+			if (!skip) {
+				err = balloc_find_range(sb, seg, maxsegs,
+							&newsegs, goal,
+							next - goal, &need);
+				if (err)
+					return err;
+				if (!need || newsegs == maxsegs)
+					goto done;
+				trace("=> result: segs = %d, need = %u, tail = %Lu",
+				      newsegs, need, tail);
+			}
 
+			tail -= next - goal;
+			/* skip reserved at bottom? */
+			goal = next == volsize ? 0 : next;
+		} while (tail);
+	} while (++pass < 2);
+
+done:
 	*segs = newsegs;
+	*blocks = need;
 
 	return 0;
 }
