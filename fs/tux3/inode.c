@@ -597,12 +597,15 @@ static int tux3_truncate(struct inode *inode, loff_t newsize)
 	i_size_write(inode, newsize);
 	/* Roundup. Partial page is handled by tux3_truncate_partial_block() */
 	holebegin = round_up(newsize, boundary);
+	if (newsize <= holebegin) {	/* Check overflow */
 #ifdef __KERNEL__
-	/* FIXME: The buffer fork before invalidate. We should merge to
-	 * truncate_pagecache() */
-	tux3_truncate_inode_pages_range(inode->i_mapping, holebegin, LLONG_MAX);
+		/* FIXME: The buffer fork before invalidate. We should merge to
+		 * truncate_pagecache() */
+		tux3_truncate_inode_pages_range(inode->i_mapping, holebegin,
+						LLONG_MAX);
 #endif
-	truncate_pagecache(inode, oldsize, holebegin);
+		truncate_pagecache(inode, oldsize, holebegin);
+	}
 
 	if (!is_expand) {
 		err = tux3_add_truncate_hole(inode, newsize);
@@ -833,7 +836,7 @@ int tux3_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat
 	 *
 	 * But, it is purely unnecessary overhead.
 	 */
-	stat->blocks = ALIGN(inode->i_size, sb->blocksize) >> 9;
+	stat->blocks = ALIGN(i_size_read(inode), sb->blocksize) >> 9;
 	return 0;
 }
 
