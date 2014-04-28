@@ -195,6 +195,44 @@ void free_forked_buffers(struct sb *sb, struct inode *inode, int force)
  * Block fork core
  */
 
+#include "mmap_builtin_hack.h"
+
+/*
+ * Clear writable to protect oldpage from following mmap write race.
+ *
+ *        cpu0                          cpu1                   cpu2
+ *                                                           [mmap write]
+ *                                                           mmap write(old)
+ *                                                               page fault
+ *                                     [backend]                 dirty old
+ *                                     delta++
+ *    [page_fault]
+ *    page fork
+ *                                                           mmap write(old)
+ *                                                               no page fault
+ *        copy_page(new, old)                                    modify page
+ *        replace_pte(new, old)
+ *                                     flusher
+ *                                     page_mkclean(old)
+ *
+ * There is delay between delta++ and page_mkclean() for I/O. So,
+ * while cpu0 copying data on page by page fork, another cpu (cpu2)
+ * can change data on the same page. If this race happens, new and old
+ * page can have different data.
+ */
+static void prepare_clone_page(struct page *page)
+{
+	assert(PageLocked(page));
+
+	/*
+	 * If backend flusher is still not clearing the dirty flag and
+	 * (not call page_mkclean()) for I/O. Call it here to prevent
+	 * above race, instead.
+	 */
+	if (PageDirty(page))
+		page_mkclean(page);
+}
+
 /*
  * This replaces the oldpage on radix-tree with newpage atomically.
  *
@@ -327,7 +365,8 @@ static struct page *clone_page(struct page *oldpage, unsigned blocksize)
 	BUG_ON(PageForked(oldpage));
 
 	/* FIXME: right? */
-	BUG_ON(PageUnevictable(oldpage));
+	BUG_ON(PageSwapCache(oldpage));
+	BUG_ON(PageSwapBacked(oldpage));
 	BUG_ON(PageHuge(oldpage));
 	if (PageError(oldpage))
 		SetPageError(newpage);
@@ -347,9 +386,10 @@ static struct page *clone_page(struct page *oldpage, unsigned blocksize)
 	 */
 	cpupid = page_cpupid_xchg_last(oldpage, -1);
 	page_cpupid_xchg_last(newpage, cpupid);
-
-	mlock_migrate_page(newpage, page);
-	ksm_migrate_page(newpage, page);
+#endif
+	mlock_migrate_page(newpage, oldpage);
+#if 0
+	ksm_migrate_page(newpage, oldpage);
 #endif
 
 	/* Lock newpage before visible via radix tree */
@@ -460,7 +500,8 @@ struct buffer_head *blockdirty(struct buffer_head *buffer, unsigned newdelta)
 	lock_page(oldpage);
 
 	/* This happens on partially dirty page. */
-//	assert(PageUptodate(page));
+//	assert(PageUptodate(oldpage));
+	assert(!page_mapped(oldpage));
 
 	switch ((ret_needfork = need_fork(oldpage, buffer, newdelta))) {
 	case RET_FORKED:
@@ -598,6 +639,9 @@ struct page *pagefork_for_blockdirty(struct page *oldpage, unsigned newdelta)
 		goto out;
 	}
 
+	/* Clear writable to protect oldpage from mmap write race */
+	prepare_clone_page(oldpage);
+
 	/*
 	 * We need to buffer fork. Start to clone the oldpage.
 	 */
@@ -635,6 +679,10 @@ struct page *pagefork_for_blockdirty(struct page *oldpage, unsigned newdelta)
 	 * newpage is available on radix-tree here.
 	 */
 	SetPageForked(oldpage);
+	/*
+	 * Update PTEs for forked page.
+	 */
+	page_cow_file(oldpage, newpage);
 	unlock_page(oldpage);
 
 	/* Register forked buffer to free forked page later */
@@ -660,6 +708,7 @@ int bufferfork_to_invalidate(struct address_space *mapping, struct page *page)
 	unsigned delta = tux3_inode_delta(mapping->host);
 
 	assert(PageLocked(page));
+	assert(!page_mapped(page));
 
 	switch (need_fork(page, NULL, delta)) {
 	case RET_NEED_FORK:

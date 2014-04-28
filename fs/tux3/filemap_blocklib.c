@@ -152,6 +152,9 @@ static int __tux3_write_begin(struct page *page, loff_t pos, unsigned len,
 	return err;
 }
 
+#define TUX3_F_PAGEFORK		(1 << 0)
+#define TUX3_F_SEP_DELTA	(1 << 1)
+
 /*
  * Copy of block_write_begin()
  * (Add to call pagefork_for_blockdirty() for buffer fork)
@@ -159,7 +162,7 @@ static int __tux3_write_begin(struct page *page, loff_t pos, unsigned len,
 static int tux3_write_begin(struct address_space *mapping, loff_t pos,
 			    unsigned len, unsigned flags,
 			    struct page **pagep, get_block_t *get_block,
-			    int check_fork)
+			    int tux3_flags)
 {
 	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
 	struct page *page;
@@ -170,12 +173,19 @@ retry:
 	if (!page)
 		return -ENOMEM;
 
+	if (tux3_flags & TUX3_F_SEP_DELTA) {
+		/* Separate big write transaction to small chunk. */
+		assert(S_ISREG(mapping->host->i_mode));
+		change_begin_if_needed(tux_sb(mapping->host->i_sb), 1);
+	}
+
 	/*
-	 * FIXME: If check_fork == 0, caller handle buffer fork.
-	 * Unlike check_fork hack, we are better to provide the different
-	 * blockget() implementation doesn't use tux3_write_begin().
+	 * FIXME: If TUX3_WRITE_PAGEFORK, caller handle buffer fork.
+	 * Unlike TUX3_WRITE_PAGEFORK hack, we are better to provide
+	 * the different blockget() implementation doesn't use
+	 * tux3_write_begin().
 	 */
-	if (check_fork) {
+	if (tux3_flags & TUX3_F_PAGEFORK) {
 		struct page *tmp;
 
 		tmp = pagefork_for_blockdirty(page, tux3_get_current_delta());
@@ -813,10 +823,12 @@ void tux3_truncate_pagecache(struct inode *inode, loff_t newsize)
 	 * truncate_inode_pages finishes, hence the second
 	 * unmap_mapping_range call must be made for correctness.
 	 */
-	unmap_mapping_range(mapping, holebegin, 0, 1);
+	if (newsize <= holebegin)	/* Check overflow */
+		unmap_mapping_range(mapping, holebegin, 0, 1);
 	/* FIXME: The buffer fork before invalidate. We should merge to
 	 * truncate_inode_pages_range() */
 	tux3_truncate_inode_pages_range(mapping, newsize, MAX_LFS_FILESIZE);
 	truncate_inode_pages(mapping, newsize);
-	unmap_mapping_range(mapping, holebegin, 0, 1);
+	if (newsize <= holebegin)	/* Check overflow */
+		unmap_mapping_range(mapping, holebegin, 0, 1);
 }

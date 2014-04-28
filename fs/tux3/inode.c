@@ -817,7 +817,7 @@ int tux3_setattr(struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = dentry->d_inode;
 	struct sb *sb = tux_sb(inode->i_sb);
-	int err, need_truncate = 0;
+	int err, need_truncate = 0, need_lock = 0;
 
 	err = inode_change_ok(inode, iattr);
 	if (err)
@@ -826,24 +826,28 @@ int tux3_setattr(struct dentry *dentry, struct iattr *iattr)
 	if (iattr->ia_valid & ATTR_SIZE && iattr->ia_size != inode->i_size) {
 		inode_dio_wait(inode);
 		need_truncate = 1;
+		/* If truncate pages, this can race with mmap write */
+		if (iattr->ia_size < inode->i_size)
+			need_lock = 1;
 	}
 
+	if (need_lock)
+		down_write(&tux_inode(inode)->truncate_lock);
 	change_begin(sb);
 
 	tux3_iattrdirty(inode);
 
-	if (need_truncate) {
+	if (need_truncate)
 		err = tux3_truncate(inode, iattr->ia_size);
-		if (err)
-			return err;
-	}
-
-	setattr_copy(inode, iattr);
+	if (!err)
+		setattr_copy(inode, iattr);
 	tux3_mark_inode_dirty(inode);
 
 	change_end(sb);
+	if (need_lock)
+		up_write(&tux_inode(inode)->truncate_lock);
 
-	return 0;
+	return err;
 }
 
 #include "inode_vfslib.c"
@@ -858,7 +862,7 @@ static const struct file_operations tux_file_fops = {
 #ifdef CONFIG_COMPAT
 //	.compat_ioctl	= fat_compat_dir_ioctl,
 #endif
-	.mmap		= generic_file_mmap,
+	.mmap		= tux3_file_mmap,
 	.open		= generic_file_open,
 	.fsync		= tux3_sync_file,
 	.splice_read	= generic_file_splice_read,

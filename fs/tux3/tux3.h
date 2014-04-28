@@ -431,6 +431,7 @@ struct tux3_inode {
 	spinlock_t hole_extents_lock;	/* lock for hole_extents */
 	struct list_head hole_extents;	/* hole extents list */
 
+	struct rw_semaphore truncate_lock; /* lock for truncate and mmap */
 	spinlock_t lock;		/* lock for inode metadata */
 	/* Per-delta dirty data for inode */
 	unsigned flags;			/* flags for inode state */
@@ -674,6 +675,9 @@ int tux3_get_block(struct inode *inode, sector_t iblock,
 		   struct buffer_head *bh_result, int create);
 struct buffer_head *__get_buffer(struct page *page, int offset);
 void tux3_try_cancel_dirty_page(struct page *page);
+void __tux3_set_page_dirty_account(struct page *page,
+				   struct address_space *mapping, int warn);
+int tux3_file_mmap(struct file *file, struct vm_area_struct *vma);
 extern const struct address_space_operations tux_file_aops;
 extern const struct address_space_operations tux_symlink_aops;
 extern const struct address_space_operations tux_blk_aops;
@@ -786,7 +790,7 @@ void change_begin_atomic_nested(struct sb *sb, void **ptr);
 void change_end_atomic_nested(struct sb *sb, void *ptr);
 void change_begin(struct sb *sb);
 int change_end(struct sb *sb);
-void change_begin_if_needed(struct sb *sb);
+void change_begin_if_needed(struct sb *sb, int need_sep);
 void change_end_if_needed(struct sb *sb);
 
 /* commit_flusher.c */
