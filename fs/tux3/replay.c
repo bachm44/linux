@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2008, Daniel Phillips
+ * Replay log blocks to recreate dirty cache on restart.
+ *
+ * Copyright (c) 2009-2014 OGAWA Hirofumi
  */
 
 #include "tux3.h"
@@ -8,7 +10,7 @@
 #define trace trace_on
 #endif
 
-static const char *log_name[] = {
+static const char *const log_name[] = {
 #define X(x)	[x] = #x
 	X(LOG_BALLOC),
 	X(LOG_BFREE),

@@ -1,6 +1,8 @@
 /*
- * Copyright (c) 2008, Daniel Phillips
- * Copyright (c) 2008, OGAWA Hirofumi
+ * Logging operations.
+ *
+ * Copyright (c) 2008-2014 Daniel Phillips
+ * Copyright (c) 2008-2014 OGAWA Hirofumi
  */
 
 #include "tux3.h"
@@ -533,8 +535,8 @@ int unstash(struct sb *sb, struct stash *stash, unstash_t actor)
 		if (top == stash->top)
 			top = stash->pos;
 		for (; vec < top; vec++) {
-			int err;
-			if ((err = actor(sb, *vec)))
+			int err = actor(sb, *vec);
+			if (err)
 				return err;
 		}
 		if (flink_is_last(head))
@@ -567,8 +569,8 @@ int stash_walk(struct sb *sb, struct stash *stash, unstash_t actor)
 		if (top == stash->top)
 			top = stash->pos;
 		for (; vec < top; vec++) {
-			int err;
-			if ((err = actor(sb, *vec)))
+			int err = actor(sb, *vec);
+			if (err)
 				return err;
 		}
 

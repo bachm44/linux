@@ -1,4 +1,9 @@
-/* Copyright (c) 2008 Daniel Phillips <phillips@phunq.net>, GPL v2 */
+/*
+ * Utility functions.
+ *
+ * Copyright (c) 2009-2014 Daniel Phillips
+ * Copyright (c) 2009-2014 OGAWA Hirofumi
+ */
 
 #ifdef __KERNEL__
 #include "tux3.h"
@@ -35,8 +40,11 @@ static void biosync_endio(struct bio *bio, int err)
 
 int syncio(int rw, struct block_device *dev, loff_t offset, unsigned vecs, struct bio_vec *vec)
 {
-	struct biosync sync = { .done = COMPLETION_INITIALIZER_ONSTACK(sync.done) };
-	if (!(sync.err = vecio(rw, dev, offset, vecs, vec, biosync_endio, &sync)))
+	struct biosync sync = {
+		.done = COMPLETION_INITIALIZER_ONSTACK(sync.done)
+	};
+	sync.err = vecio(rw, dev, offset, vecs, vec, biosync_endio, &sync);
+	if (!sync.err)
 		wait_for_completion(&sync.done);
 	return sync.err;
 }
