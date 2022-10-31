@@ -7,6 +7,7 @@
 
 #include <linux/splice.h>
 #include <linux/aio.h>		/* for kiocb */
+#include <linux/fs.h>
 
 /*
  * Almost copy of generic_file_aio_write() (added changed_begin/end,
@@ -26,7 +27,7 @@ static ssize_t tux3_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	/* For each ->write_end() calls change_end(). */
 	change_begin(sb);
 	/* FIXME: file_update_time() in this can be race with mmap */
-	ret = __generic_file_aio_write(iocb, iov, nr_segs, &iocb->ki_pos);
+	ret = generic_file_aio_write(iocb, iov, nr_segs, iocb->ki_pos);
 	change_end_if_needed(sb);
 	mutex_unlock(&inode->i_mutex);
 

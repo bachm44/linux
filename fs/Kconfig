@@ -264,5 +264,6 @@ endif # NETWORK_FILESYSTEMS
 
 source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
+source "fs/tux3/Kconfig"
 
 endmenu
