@@ -46,15 +46,6 @@ static struct super_operations s_op = {
 	.drop_inode = ext2_drop_inode
 };
 
-#define EXT2_SUPERBLOCK_BLOCK_NUMBER 1
-#define EXT2_DEFAULT_BLOCK_SIZE 1024
-#define EXT2_ROOT_INODE_NUMBER 1
-
-struct inode *ext2_make_inode(struct super_block *sb)
-{
-	return NULL;
-}
-
 static const struct inode_operations ext2_inode_ops = {};
 static const struct file_operations ext2_file_ops = {};
 
@@ -63,49 +54,104 @@ struct ext2_inode *ext2_get_inode(struct super_block *sb, int inode_number)
 	return NULL;
 }
 
+static struct inode *ext2_get_root_inode(struct super_block *sb)
+{
+	struct inode *root;
+
+	root = iget_locked(sb, EXT2_ROOT_INODE_NUMBER);
+	if (IS_ERR(root)) {
+		printk("Cannot find root inode: %ld", PTR_ERR(root));
+		return NULL;
+	}
+
+	// root->i_ino = EXT2_ROOT_INODE_NUMBER;
+	// inode_init_owner(NULL, root, NULL, S_IFDIR);
+	// root->i_sb = sb;
+	// root->i_op = &ext2_inode_ops;
+	// root->i_fop = &ext2_file_ops;
+	// root->i_atime = ns_to_timespec64(0);
+	// root->i_mtime = ns_to_timespec64(0);
+	// root->i_ctime = ns_to_timespec64(0);
+	// root->i_private = ext2_get_inode(sb, EXT2_ROOT_INODE_NUMBER);
+
+	return root;
+}
+
+/**
+ * fs/ext2/super.c
+*/
+static unsigned long get_sb_block(void **data)
+{
+	unsigned long sb_block;
+	char *options = (char *)*data;
+
+	if (!options || strncmp(options, "sb=", 3) != 0)
+		return 1; /* Default location */
+	options += 3;
+	sb_block = simple_strtoul(options, &options, 0);
+	if (*options && *options != ',') {
+		printk("EXT2-fs: Invalid sb specification: %s\n",
+		       (char *)*data);
+		return 1;
+	}
+	if (*options == ',')
+		options++;
+	*data = (void *)options;
+	return sb_block;
+}
+
 int ext2_fill_super(struct super_block *sb, void *data, int silent)
 {
-	int ret = -EPERM;
+	int ret = -EAGAIN;
 	struct buffer_head *bh;
 	struct ext2_super_block *sb_disk;
-	struct inode *root = ext2_make_inode(sb);
+	unsigned long sb_block = get_sb_block(&data);
+	int offset = 0;
 
-	bh = sb_bread(sb, EXT2_SUPERBLOCK_BLOCK_NUMBER);
+	printk("Super block number: %ld", sb_block);
+	bh = sb_bread(sb, sb_block);
+	if (!bh) {
+		printk("Buffer head null");
+		goto release;
+	}
 	BUG_ON(!bh);
 
-	sb_disk = (struct ext2_super_block *)bh->b_data;
+	int blocksize = sb_min_blocksize(sb, EXT2_DEFAULT_BLOCK_SIZE);
+	if (!blocksize) {
+		printk("Could not set blocksize");
+		goto release;
+	}
+	printk("%d", blocksize);
 
-	pr_info("Ext2 magic number in disk is: [0x%X]", sb_disk->s_magic);
+	sb_disk = (struct ext2_super_block *)(((char *)bh->b_data) + offset);
+
+	printk("inodes_cnt: %X", cpu_to_le32(sb_disk->s_inodes_count));
+	printk("blocks_cnt: %d", cpu_to_le32(sb_disk->s_blocks_count));
+	printk("magic: 0x%X", le16_to_cpu(sb_disk->s_magic));
+	printk("magic: 0x%X", sb_disk->s_magic);
+	sb_disk->s_magic = le16_to_cpu(sb_disk->s_magic);
+	pr_info("Ext magic number in disk is: [0x%X]", sb_disk->s_magic);
 
 	if (unlikely(sb_disk->s_magic != EXT2_MAGIC)) {
 		pr_err("Magic number mismatch when mounting ext2");
 		goto release;
 	}
 
-	pr_info("Superblock block size: [%d]", super_block_block_size(sb_disk));
+	pr_info("Superblock block size: [%d]",
+		ext2_super_block_block_size(sb_disk));
 
-	if (unlikely(super_block_block_size(sb_disk) !=
+	if (unlikely(ext2_super_block_block_size(sb_disk) !=
 		     EXT2_DEFAULT_BLOCK_SIZE)) {
 		pr_err("Ext2 not mounted with standard block size");
 		goto release;
 	}
 
-	sb->s_magic = EXT2_MAGIC;
-	sb->s_fs_info = sb_disk;
 	sb->s_maxbytes = EXT2_DEFAULT_BLOCK_SIZE;
 	sb->s_op = &s_op;
+	sb->s_magic = EXT2_MAGIC;
+	sb->s_fs_info = sb_disk;
 
-	root->i_ino = EXT2_ROOT_INODE_NUMBER;
-	inode_init_owner(NULL, root, NULL, S_IFDIR);
-	root->i_sb = sb;
-	root->i_op = &ext2_inode_ops;
-	root->i_fop = &ext2_file_ops;
-	root->i_atime = ns_to_timespec64(0);
-	root->i_mtime = ns_to_timespec64(0);
-	root->i_ctime = ns_to_timespec64(0);
-	root->i_private = ext2_get_inode(sb, EXT2_ROOT_INODE_NUMBER);
-
-	sb->s_root = d_make_root(root);
+	sb->s_root = d_make_root(ext2_get_root_inode(sb));
 
 	if (!sb->s_root) {
 		ret = -ENOMEM;
@@ -115,14 +161,16 @@ int ext2_fill_super(struct super_block *sb, void *data, int silent)
 
 	ret = 0;
 
+	printk("Successfully filled superblock");
+
 release:
 	brelse(bh);
 
 	return ret;
 }
 
-struct dentry *ext2_mount(struct file_system_type *fs_type, int flags,
-			  const char *dev_name, void *data)
+static struct dentry *ext2_mount(struct file_system_type *fs_type, int flags,
+				 const char *dev_name, void *data)
 {
 	// TODO create here superblock
 
@@ -137,16 +185,10 @@ struct dentry *ext2_mount(struct file_system_type *fs_type, int flags,
 	return ret;
 }
 
-void ext2_kill_sb(struct super_block *sb)
-{
-	pr_info("ext2 block destroyed.");
-	kill_block_super(sb);
-}
-
 static struct file_system_type fs_type = { .name = "ext2-inc",
 					   .fs_flags = 0,
 					   .mount = ext2_mount,
-					   .kill_sb = ext2_kill_sb,
+					   .kill_sb = kill_block_super,
 					   .owner = THIS_MODULE,
 					   .next = NULL };
 

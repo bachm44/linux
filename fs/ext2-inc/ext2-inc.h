@@ -11,6 +11,9 @@ typedef __u32 u32;
 
 #define SUPERBLOCK_OFFSET 1024
 #define EXT2_MAGIC 0x55552222
+#define EXT2_SUPERBLOCK_BLOCK_NUMBER 1
+#define EXT2_DEFAULT_BLOCK_SIZE 1024
+#define EXT2_ROOT_INODE_NUMBER 2
 
 #pragma pack(push, 1)
 struct ext2_inode {
@@ -82,7 +85,7 @@ struct ext2_super_block {
 	u8 unused2[788];
 };
 
-inline u32 super_block_block_size(struct ext2_super_block *sb)
+inline u32 ext2_super_block_block_size(struct ext2_super_block *sb)
 {
 	return 1 << sb->s_log_block_size;
 }
