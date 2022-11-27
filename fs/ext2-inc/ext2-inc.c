@@ -77,60 +77,17 @@ static struct inode *ext2_get_root_inode(struct super_block *sb)
 	return root;
 }
 
-/**
- * fs/ext2/super.c
-*/
-static unsigned long get_sb_block(void **data)
-{
-	unsigned long sb_block;
-	char *options = (char *)*data;
-
-	if (!options || strncmp(options, "sb=", 3) != 0)
-		return 1; /* Default location */
-	options += 3;
-	sb_block = simple_strtoul(options, &options, 0);
-	if (*options && *options != ',') {
-		printk("EXT2-fs: Invalid sb specification: %s\n",
-		       (char *)*data);
-		return 1;
-	}
-	if (*options == ',')
-		options++;
-	*data = (void *)options;
-	return sb_block;
-}
-
 int ext2_fill_super(struct super_block *sb, void *data, int silent)
 {
 	int ret = -EAGAIN;
 	struct buffer_head *bh;
 	struct ext2_super_block *sb_disk;
-	unsigned long sb_block = get_sb_block(&data);
-	int offset = 0;
 
-	printk("Super block number: %ld", sb_block);
-	bh = sb_bread(sb, sb_block);
-	if (!bh) {
-		printk("Buffer head null");
-		goto release;
-	}
+	sb_min_blocksize(sb, EXT2_DEFAULT_BLOCK_SIZE);
+	bh = sb_bread(sb, EXT2_SUPERBLOCK_BLOCK_NUMBER);
 	BUG_ON(!bh);
 
-	int blocksize = sb_min_blocksize(sb, EXT2_DEFAULT_BLOCK_SIZE);
-	if (!blocksize) {
-		printk("Could not set blocksize");
-		goto release;
-	}
-	printk("%d", blocksize);
-
-	sb_disk = (struct ext2_super_block *)(((char *)bh->b_data) + offset);
-
-	printk("inodes_cnt: %X", cpu_to_le32(sb_disk->s_inodes_count));
-	printk("blocks_cnt: %d", cpu_to_le32(sb_disk->s_blocks_count));
-	printk("magic: 0x%X", le16_to_cpu(sb_disk->s_magic));
-	printk("magic: 0x%X", sb_disk->s_magic);
-	sb_disk->s_magic = le16_to_cpu(sb_disk->s_magic);
-	pr_info("Ext magic number in disk is: [0x%X]", sb_disk->s_magic);
+	sb_disk = (struct ext2_super_block *)(((char *)bh->b_data));
 
 	if (unlikely(sb_disk->s_magic != EXT2_MAGIC)) {
 		pr_err("Magic number mismatch when mounting ext2");

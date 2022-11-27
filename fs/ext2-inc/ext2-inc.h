@@ -10,7 +10,7 @@ typedef __u32 u32;
 // #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #define SUPERBLOCK_OFFSET 1024
-#define EXT2_MAGIC 0x55552222
+#define EXT2_MAGIC 0xEF53
 #define EXT2_SUPERBLOCK_BLOCK_NUMBER 1
 #define EXT2_DEFAULT_BLOCK_SIZE 1024
 #define EXT2_ROOT_INODE_NUMBER 2
@@ -87,7 +87,7 @@ struct ext2_super_block {
 
 inline u32 ext2_super_block_block_size(struct ext2_super_block *sb)
 {
-	return 1 << sb->s_log_block_size;
+	return 1024 << sb->s_log_block_size;
 }
 
 struct ext2_block_group_descriptor {
