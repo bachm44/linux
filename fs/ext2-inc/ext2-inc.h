@@ -85,11 +85,6 @@ struct ext2_super_block {
 	u8 unused2[788];
 };
 
-inline u32 ext2_super_block_block_size(struct ext2_super_block *sb)
-{
-	return 1024 << sb->s_log_block_size;
-}
-
 struct ext2_block_group_descriptor {
 	u32 bg_block_bitmap; // block_bitmap_address
 	u32 bg_inode_bitmap; // inode_bitmap_address
