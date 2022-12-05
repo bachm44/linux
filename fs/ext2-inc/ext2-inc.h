@@ -37,6 +37,28 @@ struct ext2_inode {
 	u32 i_osd2; // os_specific_value
 };
 
+struct ext2_inode_info {
+	u16 i_mode; // type_permissions
+	u16 i_uid; // user_id
+	u32 i_size; // lower_size_bytes
+	u32 i_atime; // last_access_time
+	u32 i_ctime; // creation_time
+	u32 i_mtime; // last_modification_time
+	u32 i_dtime; // deletion_time
+	u16 i_gid; // group_id
+	u16 i_links_count; // hard_links_count
+	u32 i_blocks; // disk_sectors_in_use_count
+	u32 i_flags;
+	u32 i_osd1; // os_specific_value
+	u32 i_block[15];
+	u32 i_generation;
+	u32 i_file_acl;
+	u32 i_dir_acl;
+	u32 i_faddr; // fragment_block_address
+	u32 i_osd2; // os_specific_value
+	struct inode* i_vfs_inode;
+};
+
 struct ext2_super_block {
 	u32 s_inodes_count; // total_inodes
 	u32 s_blocks_count; // total_blocks

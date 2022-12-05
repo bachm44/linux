@@ -1,10 +1,22 @@
+#include "linux/slab.h"
 #include <linux/printk.h>
+#include "ext2-inc.h"
 #include <linux/fs.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/err.h>
 #include <linux/buffer_head.h>
+#include <linux/time64.h>
+#include <linux/kernel.h>
 
-#include "inode.h"
 #include "super.h"
 #include "ext2-inc.h"
+#include "inode.h"
+
+static const struct inode_operations ext2_inode_ops = {};
+static const struct file_operations ext2_file_ops = {};
+static struct kmem_cache * ext2_inode_cachep;
 
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
@@ -135,28 +147,28 @@ static long ext2_free_cached_objects(struct super_block *,
 }
 
 static const struct super_operations s_op = {
-	.alloc_inode = ext2_alloc_inode,
-	.destroy_inode = ext2_destroy_inode,
-	.free_inode = ext2_free_inode,
-	.dirty_inode = ext2_dirty_inode,
-	.write_inode = ext2_write_inode,
+//	.alloc_inode = ext2_alloc_inode,
+//	.destroy_inode = ext2_destroy_inode,
+//	.free_inode = ext2_free_inode,
+//	.dirty_inode = ext2_dirty_inode,
+//	.write_inode = ext2_write_inode,
 	.drop_inode = ext2_drop_inode,
-	.evict_inode = ext2_evict_inode,
-	.put_super = ext2_put_super,
-	.sync_fs = ext2_sync_fs,
-	.freeze_super = ext2_freeze_super,
-	.freeze_fs = ext2_freeze_fs,
-	.thaw_super = ext2_thaw_super,
-	.unfreeze_fs = ext2_unfreeze_fs,
+//	.evict_inode = ext2_evict_inode,
+//	.put_super = ext2_put_super,
+//	.sync_fs = ext2_sync_fs,
+//	.freeze_super = ext2_freeze_super,
+//	.freeze_fs = ext2_freeze_fs,
+//	.thaw_super = ext2_thaw_super,
+//	.unfreeze_fs = ext2_unfreeze_fs,
 	.statfs = ext2_statfs,
-	.remount_fs = ext2_remount_fs,
-	.umount_begin = ext2_umount_begin,
-	.show_options = ext2_show_options,
-	.show_devname = ext2_show_devname,
-	.show_path = ext2_show_path,
-	.show_stats = ext2_show_stats,
-	.nr_cached_objects = ext2_nr_cached_objects,
-	.free_cached_objects = ext2_free_cached_objects
+//	.remount_fs = ext2_remount_fs,
+//	.umount_begin = ext2_umount_begin,
+//	.show_options = ext2_show_options,
+//	.show_devname = ext2_show_devname,
+//	.show_path = ext2_show_path,
+//	.show_stats = ext2_show_stats,
+//	.nr_cached_objects = ext2_nr_cached_objects,
+//	.free_cached_objects = ext2_free_cached_objects
 };
 
 static u32 ext2_super_block_block_size(struct ext2_super_block *sb)
@@ -212,3 +224,60 @@ release:
 
 	return ret;
 }
+
+static struct dentry *ext2_mount(struct file_system_type *fs_type, int flags,
+				 const char *dev_name, void *data)
+{
+	struct dentry *ret;
+	ret = mount_bdev(fs_type, flags, dev_name, data, ext2_fill_super);
+
+	if (unlikely(IS_ERR(ret)))
+		pr_err("ext2 failed to mount.");
+	else
+		pr_info("ext2 mounted on [%s]", dev_name);
+
+	return ret;
+}
+
+static struct file_system_type fs_type = { .name = "ext2-inc",
+					   .fs_flags = FS_REQUIRES_DEV,
+					   .mount = ext2_mount,
+					   .kill_sb = kill_block_super,
+					   .owner = THIS_MODULE,
+					   .next = NULL };
+
+static int ext2_init_inode_cache(void)
+{
+	ext2_inode_cachep = kmem_cache_create(
+		"ext2_inode_cache", sizeof(struct ext2_inode), 0,
+		SLAB_RECLAIM_ACCOUNT |  SLAB_ACCOUNT, ext2_inode_init_once);
+
+	if (ext2_inode_cachep == NULL)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void ext2_destroy_cachep(void)
+{
+	kmem_cache_destroy(ext2_inode_cachep);
+}
+
+static int __init ext2_init(void)
+{
+	ext2_init_inode_cache();
+	return register_filesystem(&fs_type);
+}
+
+static void __exit ext2_exit(void)
+{
+	ext2_destroy_cachep();
+	unregister_filesystem(&fs_type);
+}
+
+MODULE_AUTHOR("Bartłomiej Chmiel <incvis@protonmail.com>");
+MODULE_LICENSE("GPL");
+MODULE_INFO(intree, "Y");
+
+module_init(ext2_init);
+module_exit(ext2_exit);
