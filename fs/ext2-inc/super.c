@@ -1,6 +1,5 @@
-#include "linux/slab.h"
+#include <linux/slab.h>
 #include <linux/printk.h>
-#include "ext2-inc.h"
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -20,13 +19,13 @@ static struct kmem_cache * ext2_inode_cachep;
 
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
-	pr_err("not implemented: ext2_alloc_inode");
-	return NULL;
-}
+	struct ext2_inode_info *inode;
+	pr_info("ext2_alloc_inode");
 
-static void ext2_destroy_inode(struct inode *i)
-{
-	pr_err("not implemented: ext2_destroy_inode");
+	inode = kmem_cache_alloc(ext2_inode_cachep, GFP_KERNEL);
+	BUG_ON(!inode);
+
+	return &inode->i_vfs_inode;
 }
 
 static void ext2_free_inode(struct inode *i)
