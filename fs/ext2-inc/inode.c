@@ -1,187 +1,142 @@
+#include "linux/compiler.h"
+#include "linux/gfp.h"
+#include "linux/slab.h"
+#include "linux/slub_def.h"
+#include "linux/types.h"
+#include <asm-generic/bug.h>
+#include <asm-generic/errno-base.h>
+#include <linux/bits.h>
+#include <linux/buffer_head.h>
+#include <linux/dcache.h>
+#include <linux/mutex.h>
 #include <linux/fs.h>
+#include <linux/math.h>
 
 #include "file.h"
 #include "inode.h"
 #include "ext2-inc.h"
+#include "super.h"
 
-struct ext2_inode *ext2_get_inode(struct super_block *sb, int inode_number)
+struct kmem_cache *ext2_inode_cache = NULL;
+
+static struct ext2_inode *ext2_get_inode(struct super_block *sb,
+					 int inode_number)
 {
+	struct inode *inode = new_inode(sb);
+	BUG_ON(!inode);
+
 	return NULL;
 }
 
-struct dentry *ext2_lookup(struct inode *, struct dentry *, unsigned int)
+static int allocate_inode(struct super_block *sb,
+			  unsigned long *out_inode_number)
 {
-	return NULL;
+	struct ext2_super_block *ext2_sb;
+	struct buffer_head *bh;
+	struct ext2_block_group_descriptor *ext2_bg;
+	struct ext2_inode_info *inode;
+	char *bitmap;
+	int ret;
+	int i;
+	char *slot;
+	int needle;
+
+	ret = -ENOSPC;
+
+	ext2_sb = EXT2_SB(sb);
+
+	/*
+	int group_count_method_1 = DIV_ROUND_UP(ext2_sb->s_blocks_count,
+						ext2_sb->s_blocks_per_group);
+	int group_count_method_2 = DIV_ROUND_UP(ext2_sb->s_inodes_count,
+						ext2_sb->s_inodes_per_group);
+
+	if (unlikely(group_count_method_1 != group_count_method_2)) {
+		pr_err("Group count mismatch: %d != %d", group_count_method_1,
+		       group_count_method_2);
+		return -EIO;
+	}
+
+	pr_info("There are %d == %d block groups available",
+		group_count_method_1, group_count_method_2);
+	*/
+
+	bh = sb_bread(sb, EXT2_SUPERBLOCK_BLOCK_NUMBER + 1);
+	BUG_ON(!bh);
+
+	ext2_bg = (struct ext2_block_group_descriptor *)bh->b_data;
+	brelse(bh);
+
+	pr_info("Inode bitmap: %d", ext2_bg->bg_inode_bitmap);
+
+	//mutex_lock(&ext2_sb->lock);
+
+	bh = sb_bread(sb, ext2_bg->bg_inode_bitmap);
+	BUG_ON(!bh);
+
+	bitmap = (char *)bh->b_data;
+
+	// find slot for inode using bitmap
+	for (i = 0; i < ext2_sb->s_inodes_count; ++i) {
+		slot = bitmap + i / BITS_PER_BYTE;
+		needle = 1 << (i % BITS_PER_BYTE);
+		if ((*slot & needle) == 0) {
+			*out_inode_number = i;
+			*slot |= needle;
+			ext2_sb->s_inodes_count++;
+			ret = 0;
+			pr_info("Found free inode at %lu", *out_inode_number);
+			break;
+		}
+	}
+
+	inode = kmem_cache_alloc(ext2_inode_cache, GFP_KERNEL);
+
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
+
+	ext2_save_superblock(sb);
+	//mutex_unlock(&ext2_sb->lock);
+
+	return ret;
 }
 
-const char *ext2_get_link(struct dentry *, struct inode *,
-			  struct delayed_call *)
+static int ext2_create(struct user_namespace *namespace, struct inode *inode,
+		       struct dentry *dentry, umode_t mode, bool)
 {
-	pr_err("not implemented: ext2_get_link");
-	return NULL;
+	int ret = 0;
+	unsigned long inode_number;
+	struct super_block *sb;
+	struct ext2_super_block *ext2_sb;
+
+	pr_debug("implemented: ext2_create");
+
+	sb = inode->i_sb;
+	ext2_sb = sb->s_fs_info;
+
+	ret = allocate_inode(sb, &inode_number);
+
+	return ret;
 }
 
-int ext2_permission(struct user_namespace *, struct inode *, int)
+static int ext2_setattr(struct user_namespace *, struct dentry *,
+			struct iattr *)
 {
-	pr_err("not implemented: ext2_permission");
+	pr_err("not implemented: setattr");
 	return 0;
 }
 
-struct posix_acl *ext2_get_acl(struct inode *, int, bool)
+static int ext2_getattr(struct user_namespace *, const struct path *,
+			struct kstat *, u32, unsigned int)
 {
-	pr_err("not implemented: ext2_get_acl");
-	return NULL;
-}
-
-int ext2_readlink(struct dentry *, char __user *, int)
-{
-	pr_err("not implemented: ext2_readlink");
+	pr_err("not implemented getattr");
 	return 0;
 }
 
-int ext2_create(struct user_namespace *, struct inode *, struct dentry *,
-		umode_t, bool)
-{
-	pr_err("not implemented: ext2_create");
-	return 0;
-}
-
-int ext2_link(struct dentry *, struct inode *, struct dentry *)
-{
-	pr_err("not implemented: ext2_link");
-	return 0;
-}
-
-int ext2_unlink(struct inode *, struct dentry *)
-{
-	pr_err("not implemented: ext2_unlink");
-	return 0;
-}
-
-int ext2_symlink(struct user_namespace *, struct inode *, struct dentry *,
-		 const char *)
-{
-	pr_err("not implemented: ext2_symlink");
-	return 0;
-}
-
-int ext2_mkdir(struct user_namespace *, struct inode *, struct dentry *,
-	       umode_t)
-{
-	pr_err("not implemented: ext2_mkdir");
-	return 0;
-}
-
-int ext2_rmdir(struct inode *, struct dentry *)
-{
-	pr_err("not implemented: ext2_rmdir");
-	return 0;
-}
-
-int ext2_mknod(struct user_namespace *, struct inode *, struct dentry *,
-	       umode_t, dev_t)
-{
-	pr_err("not implemented: ext2_mknod");
-	return 0;
-}
-
-int ext2_rename(struct user_namespace *, struct inode *, struct dentry *,
-		struct inode *, struct dentry *, unsigned int)
-{
-	pr_err("not implemented: ext2_rename");
-	return 0;
-}
-
-int ext2_setattr(struct user_namespace *, struct dentry *, struct iattr *)
-{
-	pr_err("not implemented: ext2_setattr");
-	return 0;
-}
-
-int ext2_getattr(struct user_namespace *, const struct path *, struct kstat *,
-		 u32, unsigned int)
-{
-	pr_err("not implemented: ext2_getattr");
-	return 0;
-}
-
-ssize_t ext2_listxattr(struct dentry *, char *, size_t)
-{
-	pr_err("not implemented: ext2_listxattr");
-	return 0;
-}
-
-int ext2_fiemap(struct inode *, struct fiemap_extent_info *, u64 start, u64 len)
-{
-	pr_err("not implemented: ext2_fiemap");
-	return 0;
-}
-
-int ext2_update_time(struct inode *, struct timespec64 *, int)
-{
-	pr_err("not implemented: ext2_time");
-	return 0;
-}
-
-int ext2_atomic_open(struct inode *, struct dentry *, struct file *,
-		     unsigned open_flag, umode_t create_mode)
-{
-	pr_err("not implemented: ext2_open");
-	return 0;
-}
-
-int ext2_tmpfile(struct user_namespace *, struct inode *, struct dentry *,
-		 umode_t)
-{
-	pr_err("not implemented: ext2_tmpfile");
-	return 0;
-}
-
-int ext2_set_acl(struct user_namespace *, struct inode *, struct posix_acl *,
-		 int)
-{
-	pr_err("not implemented: ext2_set_acl");
-	return 0;
-}
-
-int ext2_fileattr_set(struct user_namespace *mnt_userns, struct dentry *dentry,
-		      struct fileattr *fa)
-{
-	pr_err("not implemented: ext2_fileattr_set");
-	return 0;
-}
-
-int ext2_fileattr_get(struct dentry *dentry, struct fileattr *fa)
-{
-	pr_err("not implemented: ext2_fileattr_get");
-	return 0;
-}
-
-static const struct inode_operations i_op = {
-	.lookup = ext2_lookup,
-	.get_link = ext2_get_link,
-	.permission = ext2_permission,
-	.get_acl = ext2_get_acl,
-	.readlink = ext2_readlink,
-	.create = ext2_create,
-	.link = ext2_link,
-	.unlink = ext2_unlink,
-	.symlink = ext2_symlink,
-	.mkdir = ext2_mkdir,
-	.rmdir = ext2_rmdir,
-	.mknod = ext2_mknod,
-	.rename = ext2_rename,
-	.setattr = ext2_setattr,
-	.getattr = ext2_getattr,
-	.listxattr = ext2_listxattr,
-	.fiemap = ext2_fiemap,
-	.update_time = ext2_update_time,
-	.atomic_open = ext2_atomic_open,
-	.tmpfile = ext2_tmpfile,
-	.set_acl = ext2_set_acl,
-	.fileattr_set = ext2_fileattr_set,
-	.fileattr_get = ext2_fileattr_get,
-};
+static const struct inode_operations i_op = { .getattr = ext2_getattr,
+					      .setattr = ext2_setattr,
+					      .create = ext2_create };
 
 struct inode *ext2_inode_root(struct super_block *sb)
 {
@@ -189,10 +144,7 @@ struct inode *ext2_inode_root(struct super_block *sb)
 
 	pr_info("ext2_inode_root");
 	root = iget_locked(sb, EXT2_ROOT_INODE_NUMBER);
-	if (IS_ERR(root)) {
-		pr_err("Cannot find root inode: %ld", PTR_ERR(root));
-		return NULL;
-	}
+	BUG_ON(!root);
 
 	root->i_ino = EXT2_ROOT_INODE_NUMBER;
 	inode_init_owner(NULL, root, NULL, S_IFDIR);
@@ -209,10 +161,11 @@ struct inode *ext2_inode_root(struct super_block *sb)
 
 void ext2_inode_init_once(void *object)
 {
-	struct ext2_inode_info *inode;
+	struct ext2_inode_info *inode = object;
 
-	pr_info("ext2_inode_init_once");
+	pr_info("%s", __func__);
 
-	inode = object;
-	inode_init_once(inode->i_vfs_inode);
+	BUG_ON(!object);
+
+	inode_init_once(&inode->i_vfs_inode);
 }

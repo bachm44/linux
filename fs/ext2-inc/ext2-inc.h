@@ -1,6 +1,7 @@
 #ifndef EXT2_INC_H
 #define EXT2_INC_H
 
+#include <linux/fs.h>
 #include <linux/types.h>
 
 typedef __u8 u8;
@@ -56,7 +57,7 @@ struct ext2_inode_info {
 	u32 i_dir_acl;
 	u32 i_faddr; // fragment_block_address
 	u32 i_osd2; // os_specific_value
-	struct inode* i_vfs_inode;
+	struct inode i_vfs_inode;
 };
 
 struct ext2_super_block {
@@ -118,5 +119,15 @@ struct ext2_block_group_descriptor {
 	u8 reserved[12];
 };
 #pragma pack(pop)
+
+static inline u32 ext2_super_block_block_size(struct ext2_super_block *sb)
+{
+	return 1024 << sb->s_log_block_size;
+}
+
+static inline struct ext2_super_block *EXT2_SB(struct super_block *sb)
+{
+	return sb->s_fs_info;
+}
 
 #endif

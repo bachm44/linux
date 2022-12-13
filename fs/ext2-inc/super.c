@@ -34,21 +34,10 @@ static void ext2_free_inode(struct inode *i)
 	pr_err("not implemented: ext2_free_inode");
 }
 
-static void ext2_dirty_inode(struct inode *i, int flags)
-{
-	pr_err("not implemented: ext2_dirty_inode");
-}
-
 static int ext2_write_inode(struct inode *i, struct writeback_control *wbc)
 {
 	pr_err("not implemented: ext2_write_inode");
 	return 0;
-}
-
-static int ext2_drop_inode(struct inode *inode)
-{
-	pr_info("ext2_drop_inode");
-	return generic_delete_inode(inode);
 }
 
 static void ext2_evict_inode(struct inode *)
@@ -61,39 +50,9 @@ static void ext2_put_super(struct super_block *)
 	pr_err("not implemented: ext2_put_super");
 }
 
-static int ext2_sync_fs(struct super_block *sb, int wait)
-{
-	pr_err("not implemented: ext2_sync_fs");
-	return 0;
-}
-
-static int ext2_freeze_super(struct super_block *)
-{
-	pr_err("not implemented: ext2_freeze_super");
-	return 0;
-}
-
-static int ext2_freeze_fs(struct super_block *)
-{
-	pr_err("not implemented: ext2_freeze_fs");
-	return 0;
-}
-
-static int ext2_thaw_super(struct super_block *)
-{
-	pr_err("not implemented: ext2_thaw_super");
-	return 0;
-}
-
-static int ext2_unfreeze_fs(struct super_block *)
-{
-	pr_err("not implemented: ext2_unfreeze_fs");
-	return 0;
-}
-
 static int ext2_statfs(struct dentry *dentry, struct kstatfs *stat)
 {
-	pr_info("ext2_statfs");
+	pr_info("default: ext2_statfs");
 	return simple_statfs(dentry, stat);
 }
 
@@ -103,80 +62,30 @@ static int ext2_remount_fs(struct super_block *, int *, char *)
 	return 0;
 }
 
-static void ext2_umount_begin(struct super_block *)
-{
-	pr_err("not implemented: ext2_umount_begin");
-}
-
-static int ext2_show_options(struct seq_file *, struct dentry *)
-{
-	pr_err("not implemented: ext2_show_options");
-	return 0;
-}
-
-static int ext2_show_devname(struct seq_file *, struct dentry *)
-{
-	pr_err("not implemented: ext2_show_devname");
-	return 0;
-}
-
-static int ext2_show_path(struct seq_file *, struct dentry *)
-{
-	pr_err("not implemented: ext2_show_path");
-	return 0;
-}
-
-static int ext2_show_stats(struct seq_file *, struct dentry *)
-{
-	pr_err("not implemented: ext2_show_stats");
-	return 0;
-}
-
-static long ext2_nr_cached_objects(struct super_block *,
-				   struct shrink_control *)
-{
-	pr_err("not implemented: ext2_nr_cached_objects");
-	return 0;
-}
-
-static long ext2_free_cached_objects(struct super_block *,
-				     struct shrink_control *)
-{
-	pr_err("not implemented: ext2_free_cached_objects");
-	return 0;
-}
-
 static const struct super_operations s_op = {
-//	.alloc_inode = ext2_alloc_inode,
-//	.destroy_inode = ext2_destroy_inode,
-//	.free_inode = ext2_free_inode,
-//	.dirty_inode = ext2_dirty_inode,
-//	.write_inode = ext2_write_inode,
-	.drop_inode = ext2_drop_inode,
-//	.evict_inode = ext2_evict_inode,
-//	.put_super = ext2_put_super,
-//	.sync_fs = ext2_sync_fs,
-//	.freeze_super = ext2_freeze_super,
-//	.freeze_fs = ext2_freeze_fs,
-//	.thaw_super = ext2_thaw_super,
-//	.unfreeze_fs = ext2_unfreeze_fs,
+	.alloc_inode = ext2_alloc_inode,
+	.free_inode = ext2_free_inode,
+	.write_inode = ext2_write_inode,
+	.evict_inode = ext2_evict_inode,
+	.put_super = ext2_put_super,
 	.statfs = ext2_statfs,
-//	.remount_fs = ext2_remount_fs,
-//	.umount_begin = ext2_umount_begin,
-//	.show_options = ext2_show_options,
-//	.show_devname = ext2_show_devname,
-//	.show_path = ext2_show_path,
-//	.show_stats = ext2_show_stats,
-//	.nr_cached_objects = ext2_nr_cached_objects,
-//	.free_cached_objects = ext2_free_cached_objects
+	.remount_fs = ext2_remount_fs,
 };
 
-static u32 ext2_super_block_block_size(struct ext2_super_block *sb)
+void ext2_save_superblock(struct super_block *sb)
 {
-	return 1024 << sb->s_log_block_size;
+	struct buffer_head *bh;
+
+	bh = sb_bread(sb, EXT2_SUPERBLOCK_BLOCK_NUMBER);
+	BUG_ON(!bh);
+
+	bh->b_data = (void *)EXT2_SB(sb);
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
 }
 
-int ext2_fill_super(struct super_block *sb, void *data, int silent)
+static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 {
 	int ret = -EAGAIN;
 	struct buffer_head *bh;
@@ -246,11 +155,12 @@ static struct file_system_type fs_type = { .name = "ext2-inc",
 					   .owner = THIS_MODULE,
 					   .next = NULL };
 
-static int ext2_init_inode_cache(void)
+static int __init ext2_init_inode_cache(void)
 {
+	pr_info("%s", __func__);
 	ext2_inode_cachep = kmem_cache_create(
-		"ext2_inode_cache", sizeof(struct ext2_inode), 0,
-		SLAB_RECLAIM_ACCOUNT |  SLAB_ACCOUNT, ext2_inode_init_once);
+		"ext2_inode_cache", sizeof(struct ext2_inode_info), 0,
+		SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT, ext2_inode_init_once);
 
 	if (ext2_inode_cachep == NULL)
 		return -ENOMEM;
