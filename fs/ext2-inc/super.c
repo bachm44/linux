@@ -20,7 +20,7 @@ static struct kmem_cache * ext2_inode_cachep;
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
 	struct ext2_inode_info *inode;
-	pr_info("ext2_alloc_inode");
+	pr_info("%s", __func__);
 
 	inode = kmem_cache_alloc(ext2_inode_cachep, GFP_KERNEL);
 	BUG_ON(!inode);
@@ -30,34 +30,34 @@ static struct inode *ext2_alloc_inode(struct super_block *sb)
 
 static void ext2_free_inode(struct inode *i)
 {
-	pr_err("not implemented: ext2_free_inode");
+	pr_err("not implemented: %s", __func__);
 }
 
 static int ext2_write_inode(struct inode *i, struct writeback_control *wbc)
 {
-	pr_err("not implemented: ext2_write_inode");
+	pr_err("not implemented: %s", __func__);
 	return 0;
 }
 
 static void ext2_evict_inode(struct inode *)
 {
-	pr_err("not implemented: ext2_evict_inode");
+	pr_err("not implemented: %s", __func__);
 }
 
 static void ext2_put_super(struct super_block *)
 {
-	pr_err("not implemented: ext2_put_super");
+	pr_err("not implemented: %s", __func__);
 }
 
 static int ext2_statfs(struct dentry *dentry, struct kstatfs *stat)
 {
-	pr_info("default: ext2_statfs");
+	pr_info("default: %s", __func__);
 	return simple_statfs(dentry, stat);
 }
 
 static int ext2_remount_fs(struct super_block *, int *, char *)
 {
-	pr_err("not implemented: ext2_remount_fs");
+	pr_err("not implemented: %s", __func__);
 	return 0;
 }
 

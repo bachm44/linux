@@ -110,7 +110,7 @@ static int ext2_create(struct user_namespace *namespace, struct inode *inode,
 	struct super_block *sb;
 	struct ext2_super_block *ext2_sb;
 
-	pr_debug("implemented: ext2_create");
+	pr_info("implemented: %s", __func__);
 
 	sb = inode->i_sb;
 	ext2_sb = sb->s_fs_info;
@@ -123,14 +123,14 @@ static int ext2_create(struct user_namespace *namespace, struct inode *inode,
 static int ext2_setattr(struct user_namespace *, struct dentry *,
 			struct iattr *)
 {
-	pr_err("not implemented: setattr");
+	pr_err("not implemented: %s", __func__);
 	return 0;
 }
 
 static int ext2_getattr(struct user_namespace *, const struct path *,
 			struct kstat *, u32, unsigned int)
 {
-	pr_err("not implemented getattr");
+	pr_err("not implemented: %s", __func__);
 	return 0;
 }
 
@@ -142,7 +142,7 @@ struct inode *ext2_inode_root(struct super_block *sb)
 {
 	struct inode *root;
 
-	pr_info("ext2_inode_root");
+	pr_info("%s", __func__);
 	root = iget_locked(sb, EXT2_ROOT_INODE_NUMBER);
 	BUG_ON(!root);
 
