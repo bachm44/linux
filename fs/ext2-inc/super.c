@@ -15,7 +15,7 @@
 
 static const struct inode_operations ext2_inode_ops = {};
 static const struct file_operations ext2_file_ops = {};
-static struct kmem_cache * ext2_inode_cachep;
+struct kmem_cache *ext2_inode_cachep;
 
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
@@ -28,9 +28,10 @@ static struct inode *ext2_alloc_inode(struct super_block *sb)
 	return &inode->i_vfs_inode;
 }
 
-static void ext2_free_inode(struct inode *i)
+static void ext2_free_inode(struct inode *inode)
 {
-	pr_err("not implemented: %s", __func__);
+	pr_err("implemented: %s", __func__);
+	kmem_cache_free(ext2_inode_cachep, inode->i_private);
 }
 
 static int ext2_write_inode(struct inode *i, struct writeback_control *wbc)
