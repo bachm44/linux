@@ -130,7 +130,7 @@ sb_bgl_lock(struct ext2_sb_info *sbi, unsigned int block_group)
 /*
  * Define EXT2FS_DEBUG to produce debug messages
  */
-#undef EXT2FS_DEBUG
+#define EXT2FS_DEBUG
 
 /*
  * Define EXT2_RESERVATION to reserve data blocks for expanding files
