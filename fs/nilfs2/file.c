@@ -124,6 +124,16 @@ static int nilfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
+loff_t nilfs_remap_file_range(struct file *file_in, loff_t pos_in,
+			   struct file *file_out, loff_t pos_out, loff_t len,
+			   unsigned int remap_flags)
+{
+	const struct inode *inode = file_in->f_mapping->host;
+	struct super_block* sb = inode->i_sb;	
+	nilfs_error(sb, "remap_file_range not implemented");
+	return -1;
+}
+
 /*
  * We have mostly NULL's here: the current defaults are ok for
  * the nilfs filesystem.
@@ -142,6 +152,7 @@ const struct file_operations nilfs_file_operations = {
 	.fsync		= nilfs_sync_file,
 	.splice_read	= generic_file_splice_read,
 	.splice_write   = iter_file_splice_write,
+	.remap_file_range = nilfs_remap_file_range
 };
 
 const struct inode_operations nilfs_file_inode_operations = {
