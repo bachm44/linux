@@ -7,6 +7,9 @@
  * Written by Amagai Yoshiji and Ryusuke Konishi.
  */
 
+#include "ifile.h"
+#include "linux/buffer_head.h"
+#include "the_nilfs.h"
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/writeback.h>
@@ -58,7 +61,7 @@ static vm_fault_t nilfs_page_mkwrite(struct vm_fault *vmf)
 	if (page->mapping != inode->i_mapping ||
 	    page_offset(page) >= i_size_read(inode) || !PageUptodate(page)) {
 		unlock_page(page);
-		ret = -EFAULT;	/* make the VM retry the fault */
+		ret = -EFAULT; /* make the VM retry the fault */
 		goto out;
 	}
 
@@ -104,17 +107,17 @@ static vm_fault_t nilfs_page_mkwrite(struct vm_fault *vmf)
 	nilfs_set_file_dirty(inode, 1 << (PAGE_SHIFT - inode->i_blkbits));
 	nilfs_transaction_commit(inode->i_sb);
 
- mapped:
+mapped:
 	wait_for_stable_page(page);
- out:
+out:
 	sb_end_pagefault(inode->i_sb);
 	return block_page_mkwrite_return(ret);
 }
 
 static const struct vm_operations_struct nilfs_file_vm_ops = {
-	.fault		= filemap_fault,
-	.map_pages	= filemap_map_pages,
-	.page_mkwrite	= nilfs_page_mkwrite,
+	.fault = filemap_fault,
+	.map_pages = filemap_map_pages,
+	.page_mkwrite = nilfs_page_mkwrite,
 };
 
 static int nilfs_file_mmap(struct file *file, struct vm_area_struct *vma)
@@ -124,14 +127,113 @@ static int nilfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
-loff_t nilfs_remap_file_range(struct file *file_in, loff_t pos_in,
-			   struct file *file_out, loff_t pos_out, loff_t len,
-			   unsigned int remap_flags)
+static bool compare_extents(struct inode *src, loff_t src_off,
+			    struct inode *dst, loff_t dst_off, loff_t len)
 {
-	const struct inode *inode = file_in->f_mapping->host;
-	struct super_block* sb = inode->i_sb;	
-	nilfs_error(sb, "remap_file_range not implemented");
-	return -1;
+	struct super_block *sb = src->i_sb;
+	struct buffer_head *src_bh;
+	struct buffer_head *dst_bh;
+	void *src_data;
+	void *dst_data;
+	int i;
+
+	nilfs_info(sb, "%s", __func__);
+
+	if (src->i_size != dst->i_size) {
+		nilfs_info(sb, "inodes have different size");
+		return 0;
+	}
+
+	i = 0;
+	while (i < src->i_blocks) {
+		src_bh = sb_bread(src->i_sb, i);
+		dst_bh = sb_bread(dst->i_sb, i);
+
+		if (!src_bh || !dst_bh) {
+			nilfs_warn(sb, "cannot fetch buffer heads");
+			return false;
+		}
+
+		src_data = (char *)src_bh->b_data;
+		dst_data = (char *)dst_bh->b_data;
+
+		if (memcmp(src_data, dst_data, src_bh->b_size) != 0) {
+			nilfs_warn(sb, "inodes have different data");
+			brelse(src_bh);
+			brelse(dst_bh);
+			return false;
+		}
+
+		brelse(src_bh);
+		brelse(dst_bh);
+		++i;
+	}
+
+	return true;
+}
+
+static int nilfs_extent_same(struct inode *src, loff_t src_off, loff_t len,
+			     struct inode *dst, loff_t dst_off)
+{
+	struct super_block *sb = src->i_sb;
+	nilfs_info(sb, "%s", __func__);
+
+	if (!compare_extents(src, src_off, dst, dst_off, len)) {
+		nilfs_warn(sb, "extents are not the same");
+		return -EBADE;
+	}
+
+	return 0;
+}
+
+loff_t nilfs_remap_file_range(struct file *file_src, loff_t pos_in,
+			      struct file *file_dst, loff_t pos_out, loff_t len,
+			      unsigned int remap_flags)
+{
+	struct inode *inode_src = file_inode(file_src);
+	struct inode *inode_dst = file_inode(file_dst);
+	struct super_block *sb = inode_src->i_sb;
+	const bool same_inode = inode_src == inode_dst;
+	int ret;
+
+	nilfs_info(sb, "%s", __func__);
+
+	// TODO inode locking
+	// if (same_inode) {
+	// 	inode_lock(inode_src);
+	// } else {
+	// 	lock_two_nondirectories(inode_src, inode_dst);
+	// 	inode_lock(inode_dst);
+	// }
+
+	ret = generic_remap_file_range_prep(file_src, pos_in, file_dst, pos_out,
+					    &len, remap_flags);
+
+	if (ret < 0 || len == 0) {
+		nilfs_warn(
+			sb,
+			"generic_remap_file_range_prep failed; ret = %d, len = %lld",
+			ret, len);
+		goto out;
+	}
+
+	if (remap_flags & REMAP_FILE_DEDUP) {
+		ret = nilfs_extent_same(inode_src, pos_in, len, inode_dst,
+					pos_out);
+	} else {
+		nilfs_warn(sb, "unsupported remap_flags");
+		ret = EINVAL;
+	}
+
+out:
+	if (same_inode) {
+		inode_unlock(inode_src);
+	} else {
+		unlock_two_nondirectories(inode_src, inode_dst);
+		inode_unlock(inode_dst);
+	}
+
+	return ret < 0 ? ret : len;
 }
 
 /*
@@ -139,28 +241,28 @@ loff_t nilfs_remap_file_range(struct file *file_in, loff_t pos_in,
  * the nilfs filesystem.
  */
 const struct file_operations nilfs_file_operations = {
-	.llseek		= generic_file_llseek,
-	.read_iter	= generic_file_read_iter,
-	.write_iter	= generic_file_write_iter,
-	.unlocked_ioctl	= nilfs_ioctl,
+	.llseek = generic_file_llseek,
+	.read_iter = generic_file_read_iter,
+	.write_iter = generic_file_write_iter,
+	.unlocked_ioctl = nilfs_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl	= nilfs_compat_ioctl,
-#endif	/* CONFIG_COMPAT */
-	.mmap		= nilfs_file_mmap,
-	.open		= generic_file_open,
+	.compat_ioctl = nilfs_compat_ioctl,
+#endif /* CONFIG_COMPAT */
+	.mmap = nilfs_file_mmap,
+	.open = generic_file_open,
 	/* .release	= nilfs_release_file, */
-	.fsync		= nilfs_sync_file,
-	.splice_read	= generic_file_splice_read,
-	.splice_write   = iter_file_splice_write,
+	.fsync = nilfs_sync_file,
+	.splice_read = generic_file_splice_read,
+	.splice_write = iter_file_splice_write,
 	.remap_file_range = nilfs_remap_file_range
 };
 
 const struct inode_operations nilfs_file_inode_operations = {
-	.setattr	= nilfs_setattr,
-	.permission     = nilfs_permission,
-	.fiemap		= nilfs_fiemap,
-	.fileattr_get	= nilfs_fileattr_get,
-	.fileattr_set	= nilfs_fileattr_set,
+	.setattr = nilfs_setattr,
+	.permission = nilfs_permission,
+	.fiemap = nilfs_fiemap,
+	.fileattr_get = nilfs_fileattr_get,
+	.fileattr_set = nilfs_fileattr_set,
 };
 
 /* end of file */
