@@ -9,6 +9,8 @@
 
 #include "ifile.h"
 #include "linux/buffer_head.h"
+#include "linux/types.h"
+#include "mdt.h"
 #include "the_nilfs.h"
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -127,10 +129,20 @@ static int nilfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
-static bool compare_extents(struct inode *src, loff_t src_off,
-			    struct inode *dst, loff_t dst_off, loff_t len)
+#pragma GCC push_options
+#pragma GCC optimize("O0")
+
+struct nilfs_remap_file_args {
+	struct inode *src;
+	loff_t src_off;
+	loff_t len;
+	struct inode *dst;
+	loff_t dst_off;
+};
+
+static bool compare_extents(const struct nilfs_remap_file_args *args)
 {
-	struct super_block *sb = src->i_sb;
+	struct super_block *sb = args->src->i_sb;
 	struct buffer_head *src_bh;
 	struct buffer_head *dst_bh;
 	void *src_data;
@@ -139,15 +151,15 @@ static bool compare_extents(struct inode *src, loff_t src_off,
 
 	nilfs_info(sb, "%s", __func__);
 
-	if (src->i_size != dst->i_size) {
+	if (args->src->i_size != args->dst->i_size) {
 		nilfs_info(sb, "inodes have different size");
 		return 0;
 	}
 
 	i = 0;
-	while (i < src->i_blocks) {
-		src_bh = sb_bread(src->i_sb, i);
-		dst_bh = sb_bread(dst->i_sb, i);
+	while (i < args->src->i_blocks) {
+		src_bh = sb_bread(args->src->i_sb, i);
+		dst_bh = sb_bread(args->dst->i_sb, i);
 
 		if (!src_bh || !dst_bh) {
 			nilfs_warn(sb, "cannot fetch buffer heads");
@@ -172,16 +184,68 @@ static bool compare_extents(struct inode *src, loff_t src_off,
 	return true;
 }
 
-static int nilfs_extent_same(struct inode *src, loff_t src_off, loff_t len,
-			     struct inode *dst, loff_t dst_off)
+static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 {
-	struct super_block *sb = src->i_sb;
+	struct super_block *sb = args->src->i_sb;
+	nilfs_warn(sb, "not implemented: %s", __func__);
+
+	/*  
+	1. Create deduplication inode with content which duplicates
+	in source and destination. We assume that those files are
+	the same, so copying whole content into another inode will
+	be enough (see functions in fs/nilfs2/page.h).
+
+	2. Add flag to dedup inode marking it as such and increment
+	reference count on it (dunno if on struct inode or struct nilfs_inode_info
+	).
+
+	3. For now only in memory deduplication will be available (
+	no information about deduplication will be written to the disk,
+	but files will be removed/truncated approprietly. This means that
+	data will be lost if filesystem goes offline.
+
+	4. Trim content of src and dst inodes and to the dedup list
+	reference to deduplication inode.
+
+	5. Remember about locks (to be added later since for now not
+	considering using it concurrently when i/o operation is ongoing).
+	*/
+
+	return -1;
+}
+
+static bool files_the_same(const struct nilfs_remap_file_args *args)
+{
+	return (args->dst_off == 0 && args->src_off == 0) &&
+	       args->src->i_size == args->len;
+}
+
+static int nilfs_clone(const struct nilfs_remap_file_args *args)
+{
+	if (files_the_same(args)) {
+		return nilfs_reflink(args);
+	}
+
+	/* 
+	in the future merge code from reflink and block level deduplication
+	so that attaching dedup lists will be not *duplicated* hehe.
+	*/
+
+	nilfs_error(args->src->i_sb, "block level dedupliation not supported");
+	return -1;
+}
+
+static int nilfs_extent_same(const struct nilfs_remap_file_args *args)
+{
+	struct super_block *sb = args->src->i_sb;
 	nilfs_info(sb, "%s", __func__);
 
-	if (!compare_extents(src, src_off, dst, dst_off, len)) {
+	if (!compare_extents(args)) {
 		nilfs_warn(sb, "extents are not the same");
 		return -EBADE;
 	}
+
+	nilfs_clone(args);
 
 	return 0;
 }
@@ -218,8 +282,13 @@ loff_t nilfs_remap_file_range(struct file *file_src, loff_t pos_in,
 	}
 
 	if (remap_flags & REMAP_FILE_DEDUP) {
-		ret = nilfs_extent_same(inode_src, pos_in, len, inode_dst,
-					pos_out);
+		const struct nilfs_remap_file_args args = { .src = inode_src,
+							    .src_off = pos_in,
+							    .len = len,
+							    .dst = inode_dst,
+							    .dst_off =
+								    pos_out };
+		ret = nilfs_extent_same(&args);
 	} else {
 		nilfs_warn(sb, "unsupported remap_flags");
 		ret = EINVAL;
@@ -236,13 +305,36 @@ out:
 	return ret < 0 ? ret : len;
 }
 
+static bool is_deduplicated(const struct inode *inode)
+{
+	const struct nilfs_inode_info *info = NILFS_I(inode);
+	return info && !list_empty(&info->i_dedup_blocks);
+}
+
+ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+	struct file *file = iocb->ki_filp;
+	struct inode *inode = file_inode(file);
+	struct super_block *sb = inode->i_sb;
+	nilfs_info(sb, "%s", __func__);
+
+	if (is_deduplicated(inode)) {
+		nilfs_info(sb, "inode is deduplicated, gathering fragments");
+		// modify page of this inode with appended deduplicated fragments
+		// read from inode pointed in i_dedup_blocks list.
+	}
+
+	return generic_file_read_iter(iocb, iter);
+}
+
+#pragma GCC pop_options
 /*
  * We have mostly NULL's here: the current defaults are ok for
  * the nilfs filesystem.
  */
 const struct file_operations nilfs_file_operations = {
 	.llseek = generic_file_llseek,
-	.read_iter = generic_file_read_iter,
+	.read_iter = nilfs_read_iter,
 	.write_iter = generic_file_write_iter,
 	.unlocked_ioctl = nilfs_ioctl,
 #ifdef CONFIG_COMPAT

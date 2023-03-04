@@ -601,6 +601,7 @@ struct inode *nilfs_iget_locked(struct super_block *sb, struct nilfs_root *root,
 		.ino = ino, .root = root, .cno = 0, .for_gc = false,
 		.for_btnc = false, .for_shadow = false
 	};
+	nilfs_info(sb, "%s", __func__);
 
 	return iget5_locked(sb, ino, nilfs_iget_test, nilfs_iget_set, &args);
 }
@@ -611,6 +612,7 @@ struct inode *nilfs_iget(struct super_block *sb, struct nilfs_root *root,
 	struct inode *inode;
 	int err;
 
+	nilfs_info(sb, "%s", __func__);
 	inode = nilfs_iget_locked(sb, root, ino);
 	if (unlikely(!inode))
 		return ERR_PTR(-ENOMEM);
@@ -1115,6 +1117,7 @@ void nilfs_dirty_inode(struct inode *inode, int flags)
 {
 	struct nilfs_transaction_info ti;
 	struct nilfs_mdt_info *mdi = NILFS_MDT(inode);
+	nilfs_info(inode->i_sb, "%s", __func__);
 
 	if (is_bad_inode(inode)) {
 		nilfs_warn(inode->i_sb,
