@@ -9,8 +9,11 @@
 
 #include "ifile.h"
 #include "linux/buffer_head.h"
+#include "linux/gfp_types.h"
+#include "linux/list.h"
 #include "linux/types.h"
 #include "mdt.h"
+#include "page.h"
 #include "the_nilfs.h"
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -129,8 +132,8 @@ static int nilfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
-#pragma GCC push_options
-#pragma GCC optimize("O0")
+// #pragma GCC push_options
+// #pragma GCC optimize("O0")
 
 struct nilfs_remap_file_args {
 	struct inode *src;
@@ -187,31 +190,51 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 {
 	struct super_block *sb = args->src->i_sb;
-	nilfs_warn(sb, "not implemented: %s", __func__);
+	struct inode *src = args->src;
+	struct inode *dst = args->dst;
+	struct nilfs_inode_info *src_info = NILFS_I(src);
+	struct nilfs_inode_info *dst_info = NILFS_I(dst);
+	struct nilfs_dedup_info *dedup_info;
+
+	nilfs_info(sb, "%s", __func__);
+
+	if (test_bit(NILFS_I_DEDUP, &dst_info->i_state)) {
+		nilfs_warn(sb,
+			   "Deduplication of dedup inodes is not supported");
+		return -1;
+	}
+
+	inode_dio_wait(dst);
+	truncate_setsize(dst, 0);
+	nilfs_truncate(dst);
+
+	dedup_info = kmalloc(sizeof(*dedup_info), GFP_KERNEL);
+	if (unlikely(!dedup_info)) {
+		nilfs_error(sb, "cannot allocate memory for dedup_info");
+		return -ENOMEM;
+	}
+
+	INIT_LIST_HEAD(&dedup_info->head);
+	dedup_info->ino = src->i_ino;
+	dedup_info->offset = 0;
+	dedup_info->blocks_count = src->i_blocks;
+
+	src_info->dedup_ref_count++;
+	set_bit(NILFS_I_DEDUP, &src_info->i_state);
+
+	list_add(&dedup_info->head, &dst_info->i_dedup_blocks);
 
 	/*  
-	1. Create deduplication inode with content which duplicates
-	in source and destination. We assume that those files are
-	the same, so copying whole content into another inode will
-	be enough (see functions in fs/nilfs2/page.h).
-
-	2. Add flag to dedup inode marking it as such and increment
-	reference count on it (dunno if on struct inode or struct nilfs_inode_info
-	).
-
-	3. For now only in memory deduplication will be available (
+	1. For now only in memory deduplication will be available (
 	no information about deduplication will be written to the disk,
 	but files will be removed/truncated approprietly. This means that
 	data will be lost if filesystem goes offline.
 
-	4. Trim content of src and dst inodes and to the dedup list
-	reference to deduplication inode.
-
-	5. Remember about locks (to be added later since for now not
+	2. Remember about locks (to be added later since for now not
 	considering using it concurrently when i/o operation is ongoing).
 	*/
 
-	return -1;
+	return 0;
 }
 
 static bool files_the_same(const struct nilfs_remap_file_args *args)
@@ -245,9 +268,7 @@ static int nilfs_extent_same(const struct nilfs_remap_file_args *args)
 		return -EBADE;
 	}
 
-	nilfs_clone(args);
-
-	return 0;
+	return nilfs_clone(args);
 }
 
 loff_t nilfs_remap_file_range(struct file *file_src, loff_t pos_in,
@@ -316,10 +337,30 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	struct super_block *sb = inode->i_sb;
+	struct address_space *address_space = inode->i_mapping;
+
 	nilfs_info(sb, "%s", __func__);
 
 	if (is_deduplicated(inode)) {
 		nilfs_info(sb, "inode is deduplicated, gathering fragments");
+
+		struct buffer_head *bh =
+			nilfs_grab_buffer(inode, address_space, 0, 0);
+		const struct nilfs_inode_info *info = NILFS_I(inode);
+		struct nilfs_dedup_info *dedup_info = NULL;
+		struct nilfs_dedup_info *n = NULL;
+
+		nilfs_info(sb, "bh->b_data = %s", bh->b_data);
+
+		list_for_each_entry_safe(dedup_info, n, &info->i_dedup_blocks,
+					 head) {
+			nilfs_info(
+				sb,
+				"dedup_info for ino %d: offset = %d, ino = %d",
+				inode->i_ino, dedup_info->offset,
+				dedup_info->ino);
+		}
+
 		// modify page of this inode with appended deduplicated fragments
 		// read from inode pointed in i_dedup_blocks list.
 	}
@@ -327,7 +368,7 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return generic_file_read_iter(iocb, iter);
 }
 
-#pragma GCC pop_options
+// #pragma GCC pop_options
 /*
  * We have mostly NULL's here: the current defaults are ok for
  * the nilfs filesystem.

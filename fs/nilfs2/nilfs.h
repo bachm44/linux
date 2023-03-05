@@ -66,9 +66,11 @@ struct nilfs_inode_info {
 	struct inode vfs_inode;
 };
 
-struct nilfs_dedup_segment {
+struct nilfs_dedup_info {
 	off_t offset;
+	__u32 blocks_count;
 	ino_t ino;
+	struct list_head head;
 };
 
 static inline struct nilfs_inode_info *NILFS_I(const struct inode *inode)
