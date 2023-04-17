@@ -9,6 +9,7 @@
 
 #include "ifile.h"
 #include "linux/buffer_head.h"
+#include "linux/errno.h"
 #include "linux/gfp_types.h"
 #include "linux/list.h"
 #include "linux/types.h"
@@ -201,7 +202,7 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	if (test_bit(NILFS_I_DEDUP, &dst_info->i_state)) {
 		nilfs_warn(sb,
 			   "Deduplication of dedup inodes is not supported");
-		return -1;
+		return -ENOTSUPP;
 	}
 
 	inode_dio_wait(dst);
@@ -231,7 +232,7 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	data will be lost if filesystem goes offline.
 
 	2. Remember about locks (to be added later since for now not
-	considering using it concurrently when i/o operation is ongoing).
+	considering using it concurrently when I/O operation is ongoing).
 	*/
 
 	return 0;
@@ -255,7 +256,7 @@ static int nilfs_clone(const struct nilfs_remap_file_args *args)
 	*/
 
 	nilfs_error(args->src->i_sb, "block level dedupliation not supported");
-	return -1;
+	return -ENOTSUPP;
 }
 
 static int nilfs_extent_same(const struct nilfs_remap_file_args *args)
@@ -312,7 +313,7 @@ loff_t nilfs_remap_file_range(struct file *file_src, loff_t pos_in,
 		ret = nilfs_extent_same(&args);
 	} else {
 		nilfs_warn(sb, "unsupported remap_flags");
-		ret = EINVAL;
+		ret = -ENOTSUPP;
 	}
 
 out:
