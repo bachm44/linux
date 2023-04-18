@@ -15,6 +15,7 @@
 #include "linux/errno.h"
 #include "linux/gfp_types.h"
 #include "linux/list.h"
+#include "linux/page-flags.h"
 #include "linux/types.h"
 #include "mdt.h"
 #include "page.h"
@@ -196,12 +197,13 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 			return false;
 		}
 
-		brelse(src_bh);
-		brelse(dst_bh);
 		unlock_page(src_bh->b_page);
 		put_page(src_bh->b_page);
+		brelse(src_bh);
+
 		unlock_page(dst_bh->b_page);
 		put_page(dst_bh->b_page);
+		brelse(dst_bh);
 		++i;
 	}
 
@@ -359,6 +361,64 @@ static bool is_deduplicated(const struct inode *inode)
 	return info && !list_empty(&info->i_dedup_blocks);
 }
 
+static int nilfs_override_inode_content(struct inode *inode,
+					const struct buffer_head *data)
+{
+	struct super_block *sb = inode->i_sb;
+	struct address_space *address_space = inode->i_mapping;
+	const sector_t block_number = 0;
+	struct buffer_head *bh =
+		nilfs_grab_buffer(inode, address_space, block_number, 0);
+	struct page *page = bh->b_page;
+
+	nilfs_info(sb, "%s", __func__);
+
+	if (unlikely(!bh)) {
+		nilfs_error(sb, "failed to grab buffer");
+		BUG();
+		goto release;
+	}
+
+	/* complete this with first: fixed string for single block,
+then override with first block of arbitrary content, and then
+full functionality
+*/
+
+	char *str_data = "AEIOUY";
+
+	// inode_lock(inode);
+
+	get_bh(bh);
+	lock_buffer(bh);
+
+	bh->b_bdev = inode->i_sb->s_bdev;
+	bh->b_blocknr = block_number;
+	memcpy(bh->b_data, str_data, strlen(str_data));
+
+	flush_dcache_page(page);
+	set_buffer_uptodate(bh);
+	set_buffer_mapped(bh);
+	mark_buffer_dirty(bh);
+	bh->b_end_io = end_buffer_read_sync;
+	// submit_bh(REQ_OP_WRITE, bh);
+	unlock_buffer(bh);
+	put_bh(bh);
+
+	// inode_unlock(inode);
+
+	i_size_write(inode, (strlen(str_data)) * sizeof(char));
+	set_page_dirty(page);
+	// SetPageUptodate(page);
+
+release:
+
+	unlock_page(page);
+	put_page(page);
+	mark_inode_dirty(inode);
+
+	return 0;
+}
+
 ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct file *file = iocb->ki_filp;
@@ -371,22 +431,28 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	if (is_deduplicated(inode)) {
 		nilfs_info(sb, "inode is deduplicated, gathering fragments");
 
-		struct buffer_head *bh =
-			nilfs_grab_buffer(inode, address_space, 0, 0);
 		const struct nilfs_inode_info *info = NILFS_I(inode);
 		struct nilfs_dedup_info *dedup_info = NULL;
 		struct nilfs_dedup_info *n = NULL;
 
-		nilfs_info(sb, "bh->b_data = %s", bh->b_data);
-
-		list_for_each_entry_safe(dedup_info, n, &info->i_dedup_blocks,
-					 head) {
-			nilfs_info(
+		if (!list_is_singular(&info->i_dedup_blocks)) {
+			nilfs_error(
 				sb,
-				"dedup_info for ino %d: offset = %d, ino = %d",
-				inode->i_ino, dedup_info->offset,
-				dedup_info->ino);
+				"currently only file-level singular deduplication is supported for 1 block file size");
+			return -ENOTSUPP;
 		}
+
+		nilfs_override_inode_content(inode, NULL);
+
+		// 	list_for_each_entry_safe(dedup_info, n,
+		// 				 &info->i_dedup_blocks, head)
+		// {
+		// 	nilfs_info(
+		// 		sb,
+		// 		"dedup_info for ino %d: offset = %d, ino = %d",
+		// 		inode->i_ino, dedup_info->offset,
+		// 		dedup_info->ino);
+		// }
 
 		// modify page of this inode with appended deduplicated fragments
 		// read from inode pointed in i_dedup_blocks list.
