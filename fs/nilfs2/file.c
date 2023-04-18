@@ -7,6 +7,9 @@
  * Written by Amagai Yoshiji and Ryusuke Konishi.
  */
 
+#include "asm-generic/errno-base.h"
+#include "bmap.h"
+#include "dat.h"
 #include "ifile.h"
 #include "linux/buffer_head.h"
 #include "linux/errno.h"
@@ -146,24 +149,34 @@ struct nilfs_remap_file_args {
 
 static bool compare_extents(const struct nilfs_remap_file_args *args)
 {
+	const struct the_nilfs *nilfs = args->src->i_sb->s_fs_info;
+	const blkcnt_t src_block_count =
+		DIV_ROUND_UP(args->src->i_size, nilfs->ns_blocksize);
+
 	struct super_block *sb = args->src->i_sb;
-	struct buffer_head *src_bh;
-	struct buffer_head *dst_bh;
-	void *src_data;
-	void *dst_data;
-	int i;
+	struct buffer_head *src_bh = NULL;
+	struct buffer_head *dst_bh = NULL;
+	void *src_data = NULL;
+	void *dst_data = NULL;
+	int i = 0;
 
 	nilfs_info(sb, "%s", __func__);
+
+	nilfs_info(
+		sb,
+		"comparing inodes with src inode size = %d and dst inode size = %d, src_block_count = %d",
+		args->src->i_size, args->dst->i_size, src_block_count);
 
 	if (args->src->i_size != args->dst->i_size) {
 		nilfs_info(sb, "inodes have different size");
 		return 0;
 	}
 
-	i = 0;
-	while (i < args->src->i_blocks) {
-		src_bh = sb_bread(args->src->i_sb, i);
-		dst_bh = sb_bread(args->dst->i_sb, i);
+	while (i < src_block_count) {
+		src_bh = nilfs_grab_buffer(args->src, args->src->i_mapping, i,
+					   0);
+		dst_bh = nilfs_grab_buffer(args->dst, args->dst->i_mapping, i,
+					   0);
 
 		if (!src_bh || !dst_bh) {
 			nilfs_warn(sb, "cannot fetch buffer heads");
@@ -172,6 +185,9 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 
 		src_data = (char *)src_bh->b_data;
 		dst_data = (char *)dst_bh->b_data;
+
+		// nilfs_info(sb, "comparing blocknr %d: %s == %s", i, src_data,
+		// 	   dst_data);
 
 		if (memcmp(src_data, dst_data, src_bh->b_size) != 0) {
 			nilfs_warn(sb, "inodes have different data");
@@ -182,6 +198,10 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 
 		brelse(src_bh);
 		brelse(dst_bh);
+		unlock_page(src_bh->b_page);
+		put_page(src_bh->b_page);
+		unlock_page(dst_bh->b_page);
+		put_page(dst_bh->b_page);
 		++i;
 	}
 
@@ -324,7 +344,13 @@ out:
 		inode_unlock(inode_dst);
 	}
 
-	return ret < 0 ? ret : len;
+	if (ret < 0) {
+		nilfs_error(sb, "deduplication failed with code: %d", ret);
+		return ret;
+	}
+
+	nilfs_info(sb, "deduplication succedded, deduplicated %d bytes", len);
+	return len;
 }
 
 static bool is_deduplicated(const struct inode *inode)
