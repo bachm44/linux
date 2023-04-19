@@ -45,7 +45,6 @@ struct nilfs_inode_info {
 	__u64 i_cno;		/* check point number for GC inode */
 	struct inode *i_assoc_inode;
 	struct list_head i_dirty;	/* List for connecting dirty files */
-	struct list_head i_dedup_blocks; /* List for connecting deduplicated blocks */
 	ino_t dedup_ref_count;
 
 #ifdef CONFIG_NILFS_XATTR
@@ -67,10 +66,7 @@ struct nilfs_inode_info {
 };
 
 struct nilfs_dedup_info {
-	off_t offset;
-	__u32 blocks_count;
 	ino_t ino;
-	struct list_head head;
 };
 
 static inline struct nilfs_inode_info *NILFS_I(const struct inode *inode)
@@ -101,8 +97,8 @@ enum {
 	NILFS_I_BMAP,			/* has bmap and btnode_cache */
 	NILFS_I_GCINODE,		/* inode for GC, on memory only */
 	NILFS_I_BTNC,			/* inode for btree node cache */
-	NILFS_I_SHADOW,			/* inode for shadowed page cache */
-	NILFS_I_DEDUP,			/* inode for deduplication content */
+	NILFS_I_SHADOW, 		/* inode for shadowed page cache */
+	NILFS_I_NODEDUP			/* inode with fetched deduplicated segment*/
 };
 
 /*

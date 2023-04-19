@@ -1374,7 +1374,6 @@ static void nilfs_inode_init_once(void *obj)
 
 	ii->dedup_ref_count = 0;
 	INIT_LIST_HEAD(&ii->i_dirty);
-	INIT_LIST_HEAD(&ii->i_dedup_blocks);
 #ifdef CONFIG_NILFS_XATTR
 	init_rwsem(&ii->xattr_sem);
 #endif

@@ -11,6 +11,7 @@
 #include "bmap.h"
 #include "dat.h"
 #include "ifile.h"
+#include "linux/bitops.h"
 #include "linux/buffer_head.h"
 #include "linux/errno.h"
 #include "linux/gfp_types.h"
@@ -210,6 +211,15 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 	return true;
 }
 
+/* since we do not want to introduce new flag for
+   keeping information whether or not inode was deduplicated
+   we use this flag. This means, that inode content keeps
+   not actual content, but struct nilfs_dedup_info.
+   TODO: WARNING: This may lead to very strange inode errors
+*/
+#define NILFS_DEDUP_FLAG S_CASEFOLD
+#define IS_NILFS_DEDUP_INODE(inode) IS_CASEFOLDED(inode)
+
 static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 {
 	struct super_block *sb = args->src->i_sb;
@@ -217,11 +227,10 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	struct inode *dst = args->dst;
 	struct nilfs_inode_info *src_info = NILFS_I(src);
 	struct nilfs_inode_info *dst_info = NILFS_I(dst);
-	struct nilfs_dedup_info *dedup_info;
 
 	nilfs_info(sb, "%s", __func__);
 
-	if (test_bit(NILFS_I_DEDUP, &dst_info->i_state)) {
+	if (IS_NILFS_DEDUP_INODE(dst_info)) {
 		nilfs_warn(sb,
 			   "Deduplication of dedup inodes is not supported");
 		return -ENOTSUPP;
@@ -231,29 +240,13 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	truncate_setsize(dst, 0);
 	nilfs_truncate(dst);
 
-	dedup_info = kmalloc(sizeof(*dedup_info), GFP_KERNEL);
-	if (unlikely(!dedup_info)) {
-		nilfs_error(sb, "cannot allocate memory for dedup_info");
-		return -ENOMEM;
-	}
-
-	INIT_LIST_HEAD(&dedup_info->head);
-	dedup_info->ino = src->i_ino;
-	dedup_info->offset = 0;
-	dedup_info->blocks_count = src->i_blocks;
-
 	src_info->dedup_ref_count++;
-	set_bit(NILFS_I_DEDUP, &src_info->i_state);
 
-	list_add(&dedup_info->head, &dst_info->i_dedup_blocks);
+	dst_info->i_flags |= NILFS_DEDUP_FLAG;
+	nilfs_dirty_inode(dst, 0);
 
 	/*  
-	1. For now only in memory deduplication will be available (
-	no information about deduplication will be written to the disk,
-	but files will be removed/truncated approprietly. This means that
-	data will be lost if filesystem goes offline.
-
-	2. Remember about locks (to be added later since for now not
+	1. Remember about locks (to be added later since for now not
 	considering using it concurrently when I/O operation is ongoing).
 	*/
 
@@ -358,7 +351,15 @@ out:
 static bool is_deduplicated(const struct inode *inode)
 {
 	const struct nilfs_inode_info *info = NILFS_I(inode);
-	return info && !list_empty(&info->i_dedup_blocks);
+	const bool is_dedup_in_info = info && IS_NILFS_DEDUP_INODE(info);
+	const bool is_dedup_in_inode = IS_NILFS_DEDUP_INODE(inode);
+
+	// is dedup node content already replaced in memory?
+	// checked in order to reduce number of content overrides
+	const bool is_no_dedup_in_state =
+		test_bit(NILFS_I_NODEDUP, &info->i_state);
+
+	return (is_dedup_in_info || is_dedup_in_inode) && !is_no_dedup_in_state;
 }
 
 static int nilfs_override_inode_content(struct inode *inode,
@@ -384,37 +385,30 @@ then override with first block of arbitrary content, and then
 full functionality
 */
 
-	char *str_data = "AEIOUY";
-
-	// inode_lock(inode);
+	const char *str_data = "AEIOUY";
+	const unsigned long data_len = strlen(str_data);
 
 	get_bh(bh);
 	lock_buffer(bh);
 
 	bh->b_bdev = inode->i_sb->s_bdev;
 	bh->b_blocknr = block_number;
-	memcpy(bh->b_data, str_data, strlen(str_data));
+	memcpy(bh->b_data, str_data, data_len);
 
 	flush_dcache_page(page);
 	set_buffer_uptodate(bh);
 	set_buffer_mapped(bh);
 	mark_buffer_dirty(bh);
 	bh->b_end_io = end_buffer_read_sync;
-	// submit_bh(REQ_OP_WRITE, bh);
 	unlock_buffer(bh);
 	put_bh(bh);
 
-	// inode_unlock(inode);
-
-	i_size_write(inode, (strlen(str_data)) * sizeof(char));
+	i_size_write(inode, data_len * sizeof(char));
 	set_page_dirty(page);
-	// SetPageUptodate(page);
 
 release:
-
 	unlock_page(page);
 	put_page(page);
-	mark_inode_dirty(inode);
 
 	return 0;
 }
@@ -424,38 +418,17 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	struct super_block *sb = inode->i_sb;
-	struct address_space *address_space = inode->i_mapping;
 
 	nilfs_info(sb, "%s", __func__);
 
 	if (is_deduplicated(inode)) {
+		set_bit(NILFS_I_NODEDUP, &NILFS_I(inode)->i_state);
+
 		nilfs_info(sb, "inode is deduplicated, gathering fragments");
-
-		const struct nilfs_inode_info *info = NILFS_I(inode);
-		struct nilfs_dedup_info *dedup_info = NULL;
-		struct nilfs_dedup_info *n = NULL;
-
-		if (!list_is_singular(&info->i_dedup_blocks)) {
-			nilfs_error(
-				sb,
-				"currently only file-level singular deduplication is supported for 1 block file size");
-			return -ENOTSUPP;
-		}
 
 		nilfs_override_inode_content(inode, NULL);
 
-		// 	list_for_each_entry_safe(dedup_info, n,
-		// 				 &info->i_dedup_blocks, head)
-		// {
-		// 	nilfs_info(
-		// 		sb,
-		// 		"dedup_info for ino %d: offset = %d, ino = %d",
-		// 		inode->i_ino, dedup_info->offset,
-		// 		dedup_info->ino);
-		// }
-
 		// modify page of this inode with appended deduplicated fragments
-		// read from inode pointed in i_dedup_blocks list.
 	}
 
 	return generic_file_read_iter(iocb, iter);
