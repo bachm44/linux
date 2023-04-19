@@ -13,6 +13,7 @@
 #include "ifile.h"
 #include "linux/bitops.h"
 #include "linux/buffer_head.h"
+#include "linux/compiler.h"
 #include "linux/errno.h"
 #include "linux/gfp_types.h"
 #include "linux/list.h"
@@ -149,11 +150,21 @@ struct nilfs_remap_file_args {
 	loff_t dst_off;
 };
 
+static blkcnt_t inode_block_count(const struct inode *inode)
+{
+	const struct the_nilfs *nilfs = inode->i_sb->s_fs_info;
+	return DIV_ROUND_UP(inode->i_size, nilfs->ns_blocksize);
+}
+
+static inline bool are_inodes_same_size(const struct inode *a,
+					const struct inode *b)
+{
+	return a->i_size == b->i_size;
+}
+
 static bool compare_extents(const struct nilfs_remap_file_args *args)
 {
-	const struct the_nilfs *nilfs = args->src->i_sb->s_fs_info;
-	const blkcnt_t src_block_count =
-		DIV_ROUND_UP(args->src->i_size, nilfs->ns_blocksize);
+	const blkcnt_t src_block_count = inode_block_count(args->src);
 
 	struct super_block *sb = args->src->i_sb;
 	struct buffer_head *src_bh = NULL;
@@ -169,7 +180,7 @@ static bool compare_extents(const struct nilfs_remap_file_args *args)
 		"comparing inodes with src inode size = %d and dst inode size = %d, src_block_count = %d",
 		args->src->i_size, args->dst->i_size, src_block_count);
 
-	if (args->src->i_size != args->dst->i_size) {
+	if (!are_inodes_same_size(args->src, args->dst)) {
 		nilfs_info(sb, "inodes have different size");
 		return 0;
 	}
@@ -227,8 +238,11 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	struct inode *dst = args->dst;
 	struct nilfs_inode_info *src_info = NILFS_I(src);
 	struct nilfs_inode_info *dst_info = NILFS_I(dst);
+	struct buffer_head *dst_bh = NULL;
+	const struct nilfs_dedup_info dedup_info = { .ino = src->i_ino };
 
 	nilfs_info(sb, "%s", __func__);
+	nilfs_info(sb, "dedup_info = {.ino = %lld}", dedup_info.ino);
 
 	if (IS_NILFS_DEDUP_INODE(dst_info)) {
 		nilfs_warn(sb,
@@ -236,13 +250,51 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 		return -ENOTSUPP;
 	}
 
+	if (inode_block_count(args->src) > 1) {
+		nilfs_warn(
+			sb,
+			"Deduplication of multiple-block inodes is not supported");
+		return -ENOTSUPP;
+	}
+
 	inode_dio_wait(dst);
 	truncate_setsize(dst, 0);
 	nilfs_truncate(dst);
 
+	// TODO remember to implement reference counting of inodes (if used for deduplication then do not remove)
 	src_info->dedup_ref_count++;
 
 	dst_info->i_flags |= NILFS_DEDUP_FLAG;
+
+	dst_bh = nilfs_grab_buffer(args->dst, args->dst->i_mapping, 0, 0);
+
+	if (unlikely(!dst_bh)) {
+		nilfs_error(sb, "failed to grab buffer");
+		BUG();
+		return -ENOMEM;
+	}
+
+	get_bh(dst_bh);
+	lock_buffer(dst_bh);
+
+	dst_bh->b_bdev = args->dst->i_sb->s_bdev;
+	// TODO remember to adjust blocknr if needed when implementing multiple-block setup
+	dst_bh->b_blocknr = 0;
+	// TODO remember to memcpy multiple blocks
+	memcpy(dst_bh->b_data, &dedup_info, sizeof(struct nilfs_dedup_info));
+
+	set_buffer_uptodate(dst_bh);
+	set_buffer_mapped(dst_bh);
+	mark_buffer_dirty(dst_bh);
+	dst_bh->b_end_io = end_buffer_read_sync;
+	unlock_buffer(dst_bh);
+	put_bh(dst_bh);
+
+	i_size_write(args->dst, sizeof(struct nilfs_dedup_info));
+	set_page_dirty(dst_bh->b_page);
+
+	unlock_page(dst_bh->b_page);
+	put_page(dst_bh->b_page);
 	nilfs_dirty_inode(dst, 0);
 
 	/*  
@@ -367,10 +419,13 @@ static int nilfs_override_inode_content(struct inode *inode,
 {
 	struct super_block *sb = inode->i_sb;
 	struct address_space *address_space = inode->i_mapping;
+	// TODO remember to implement multiple block override
 	const sector_t block_number = 0;
 	struct buffer_head *bh =
 		nilfs_grab_buffer(inode, address_space, block_number, 0);
 	struct page *page = bh->b_page;
+	struct buffer_head *bh_src = NULL;
+	struct nilfs_dedup_info *dedup_info = NULL;
 
 	nilfs_info(sb, "%s", __func__);
 
@@ -379,6 +434,16 @@ static int nilfs_override_inode_content(struct inode *inode,
 		BUG();
 		goto release;
 	}
+
+	dedup_info = (struct nilfs_dedup_info *)bh->b_data;
+
+	if (unlikely(!dedup_info)) {
+		nilfs_error(sb, "failed to read dedup_info from inode data");
+		BUG();
+		goto release;
+	}
+
+	nilfs_info(sb, "dedup_info = {.ino = %lld}", dedup_info->ino);
 
 	/* complete this with first: fixed string for single block,
 then override with first block of arbitrary content, and then
