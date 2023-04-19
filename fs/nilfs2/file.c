@@ -283,10 +283,14 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	// TODO remember to memcpy multiple blocks
 	memcpy(dst_bh->b_data, &dedup_info, sizeof(struct nilfs_dedup_info));
 
+	// FIXME save b_data to disk
+
+	flush_dcache_page(dst_bh->b_page);
 	set_buffer_uptodate(dst_bh);
 	set_buffer_mapped(dst_bh);
 	mark_buffer_dirty(dst_bh);
 	dst_bh->b_end_io = end_buffer_read_sync;
+	sync_dirty_buffer(dst_bh);
 	unlock_buffer(dst_bh);
 	put_bh(dst_bh);
 
@@ -295,6 +299,9 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 
 	unlock_page(dst_bh->b_page);
 	put_page(dst_bh->b_page);
+
+	mark_inode_dirty(dst);
+	nilfs_set_file_dirty(dst, 1);
 	nilfs_dirty_inode(dst, 0);
 
 	/*  
@@ -414,8 +421,7 @@ static bool is_deduplicated(const struct inode *inode)
 	return (is_dedup_in_info || is_dedup_in_inode) && !is_no_dedup_in_state;
 }
 
-static int nilfs_override_inode_content(struct inode *inode,
-					const struct buffer_head *data)
+static int nilfs_override_inode_content(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
 	struct address_space *address_space = inode->i_mapping;
@@ -426,6 +432,8 @@ static int nilfs_override_inode_content(struct inode *inode,
 	struct page *page = bh->b_page;
 	struct buffer_head *bh_src = NULL;
 	struct nilfs_dedup_info *dedup_info = NULL;
+	struct inode *src_inode = NULL;
+	char *data = NULL;
 
 	nilfs_info(sb, "%s", __func__);
 
@@ -445,20 +453,34 @@ static int nilfs_override_inode_content(struct inode *inode,
 
 	nilfs_info(sb, "dedup_info = {.ino = %lld}", dedup_info->ino);
 
+	src_inode = nilfs_iget(sb, NILFS_I(inode)->i_root, dedup_info->ino);
+	if (IS_ERR(src_inode)) {
+		nilfs_error(sb, "could not read src inode");
+		BUG();
+		goto release;
+	}
+
+	// TODO remember to change blocknr for multi-block setup
+	bh_src = nilfs_grab_buffer(src_inode, src_inode->i_mapping, 0, 0);
+	if (unlikely(!bh_src)) {
+		nilfs_error(sb, "failed to grab buffer");
+		BUG();
+		goto release;
+	}
+
 	/* complete this with first: fixed string for single block,
 then override with first block of arbitrary content, and then
 full functionality
 */
 
-	const char *str_data = "AEIOUY";
-	const unsigned long data_len = strlen(str_data);
+	data = bh_src->b_data;
 
 	get_bh(bh);
 	lock_buffer(bh);
 
 	bh->b_bdev = inode->i_sb->s_bdev;
 	bh->b_blocknr = block_number;
-	memcpy(bh->b_data, str_data, data_len);
+	memcpy(bh->b_data, data, src_inode->i_size);
 
 	flush_dcache_page(page);
 	set_buffer_uptodate(bh);
@@ -468,12 +490,16 @@ full functionality
 	unlock_buffer(bh);
 	put_bh(bh);
 
-	i_size_write(inode, data_len * sizeof(char));
+	i_size_write(inode, sizeof(char) * src_inode->i_size);
 	set_page_dirty(page);
 
 release:
 	unlock_page(page);
 	put_page(page);
+
+	unlock_page(bh_src->b_page);
+	put_page(bh_src->b_page);
+	brelse(bh_src);
 
 	return 0;
 }
@@ -491,9 +517,7 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 		nilfs_info(sb, "inode is deduplicated, gathering fragments");
 
-		nilfs_override_inode_content(inode, NULL);
-
-		// modify page of this inode with appended deduplicated fragments
+		nilfs_override_inode_content(inode);
 	}
 
 	return generic_file_read_iter(iocb, iter);
