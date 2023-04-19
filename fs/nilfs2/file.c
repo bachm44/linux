@@ -266,6 +266,9 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 
 	dst_info->i_flags |= NILFS_DEDUP_FLAG;
 
+	struct nilfs_transaction_info ti;
+	nilfs_transaction_begin(sb, &ti, 0);
+
 	dst_bh = nilfs_grab_buffer(args->dst, args->dst->i_mapping, 0, 0);
 
 	if (unlikely(!dst_bh)) {
@@ -286,8 +289,9 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 	set_buffer_uptodate(dst_bh);
 	set_buffer_mapped(dst_bh);
 	mark_buffer_dirty(dst_bh);
-	dst_bh->b_end_io = end_buffer_read_sync;
 	unlock_buffer(dst_bh);
+	sync_dirty_buffer(dst_bh);
+	dst_bh->b_end_io = end_buffer_write_sync;
 	put_bh(dst_bh);
 
 	i_size_write(args->dst, sizeof(struct nilfs_dedup_info));
@@ -295,7 +299,13 @@ static int nilfs_reflink(const struct nilfs_remap_file_args *args)
 
 	unlock_page(dst_bh->b_page);
 	put_page(dst_bh->b_page);
-	nilfs_dirty_inode(dst, 0);
+
+	nilfs_mark_inode_dirty(dst);
+	nilfs_set_file_dirty(dst, 0);
+	nilfs_transaction_commit(sb);
+	down_write(&sb->s_umount);
+	sync_filesystem(sb);
+	up_write(&sb->s_umount);
 
 	/*  
 	1. Remember about locks (to be added later since for now not
