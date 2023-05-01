@@ -23,6 +23,7 @@
 #include "cpfile.h"
 #include "sufile.h"
 #include "dat.h"
+#include "dedup.h"
 
 /**
  * nilfs_ioctl_wrap_copy - wrapping function of get/set metadata info
@@ -1261,6 +1262,36 @@ out:
 	return ret;
 }
 
+static int nilfs_ioctl_dedup(struct inode *inode, struct file *filp,
+			     void __user *argp)
+{
+	struct super_block *sb = inode->i_sb;
+	struct nilfs_transaction_info ti;
+	__u64 blocks_to_consider;
+	int ret;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if ((ret = mnt_want_write_file(filp)))
+		return ret;
+
+	if (copy_from_user(&blocks_to_consider, argp,
+			   sizeof(blocks_to_consider)))
+		return -EFAULT;
+
+	nilfs_transaction_begin(sb, &ti, 0);
+	ret = nilfs_dedup(inode, blocks_to_consider);
+
+	if (unlikely(ret < 0))
+		nilfs_transaction_abort(sb);
+	else
+		nilfs_transaction_commit(sb);
+
+	mnt_drop_write_file(filp);
+	return ret;
+}
+
 long nilfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(filp);
@@ -1301,6 +1332,8 @@ long nilfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return nilfs_ioctl_resize(inode, filp, argp);
 	case NILFS_IOCTL_SET_ALLOC_RANGE:
 		return nilfs_ioctl_set_alloc_range(inode, argp);
+	case NILFS_IOCTL_DEDUP:
+		return nilfs_ioctl_dedup(inode, filp, argp);
 	case FITRIM:
 		return nilfs_ioctl_trim_fs(inode, argp);
 	default:
