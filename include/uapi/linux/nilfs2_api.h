@@ -263,7 +263,10 @@ struct nilfs_bdesc {
 
 struct nilfs_deduplication_block {
 	__u64 ino;
+	__u64 cno;
+	__u64 vblocknr;
 	__u64 blocknr;
+	__u64 offset;
 };
 
 struct nilfs_deduplication_payload {
