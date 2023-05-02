@@ -395,6 +395,8 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 	void *kaddr;
 	int ret;
 
+	nilfs_info(dat->i_sb, "%s", __func__);
+
 	ret = nilfs_palloc_get_entry_block(dat, vblocknr, 0, &entry_bh);
 	if (ret < 0)
 		return ret;

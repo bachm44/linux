@@ -7,6 +7,7 @@
  * Written by Koji Sato.
  */
 
+#include "linux/nilfs2_api.h"
 #include <linux/fs.h>
 #include <linux/wait.h>
 #include <linux/slab.h>
@@ -1267,27 +1268,57 @@ static int nilfs_ioctl_dedup(struct inode *inode, struct file *filp,
 {
 	struct super_block *sb = inode->i_sb;
 	struct nilfs_transaction_info ti;
-	__u64 blocks_to_consider;
+	struct nilfs_argv argv;
+	size_t length;
+	void *base;
+	void *kbuf;
 	int ret;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	if ((ret = mnt_want_write_file(filp)))
-		return ret;
+		goto out;
 
-	if (copy_from_user(&blocks_to_consider, argp,
-			   sizeof(blocks_to_consider)))
-		return -EFAULT;
+	if (copy_from_user(&argv, argp, sizeof(argv)))
+		goto out;
+	
+	ret = -EINVAL;
+	if (argv.v_size < sizeof(struct nilfs_deduplication_block))
+		goto out;
+	
+	if (argv.v_nmembs < 2)
+		goto out;
+	
+	length = argv.v_size * argv.v_nmembs;
+	if (!length) {
+		ret = 0;
+		goto out;
+	}
+
+	base  = (void __user*)(unsigned long) argv.v_base;
+	kbuf = vmalloc(length);
+	if (!kbuf) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	if (copy_from_user(kbuf, base, length)) {
+		ret = -EFAULT;
+		goto out_free;
+	}
 
 	nilfs_transaction_begin(sb, &ti, 0);
-	ret = nilfs_dedup(inode, blocks_to_consider);
+	ret = nilfs_dedup(inode, kbuf, argv.v_nmembs);
 
 	if (unlikely(ret < 0))
 		nilfs_transaction_abort(sb);
 	else
 		nilfs_transaction_commit(sb);
 
+out_free:
+	vfree(kbuf);
+out:
 	mnt_drop_write_file(filp);
 	return ret;
 }
@@ -1357,6 +1388,7 @@ long nilfs_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case NILFS_IOCTL_GET_SUSTAT:
 	case NILFS_IOCTL_GET_VINFO:
 	case NILFS_IOCTL_GET_BDESCS:
+	case NILFS_IOCTL_DEDUP:
 	case NILFS_IOCTL_CLEAN_SEGMENTS:
 	case NILFS_IOCTL_SYNC:
 	case NILFS_IOCTL_RESIZE:

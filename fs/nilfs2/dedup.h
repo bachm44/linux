@@ -11,7 +11,10 @@
 #include <linux/types.h>
 
 struct inode;
+struct nilfs_deduplication_block;
 
-int nilfs_dedup(struct inode *inode, __u64 blocks_to_consider);
+int nilfs_dedup(struct inode *inode,
+		const struct nilfs_deduplication_block *blocks,
+		size_t blocks_count);
 
 #endif /* _NILFS_DEDUP_H */
