@@ -2827,3 +2827,26 @@ void nilfs_detach_log_writer(struct super_block *sb)
 
 	nilfs_dispose_list(nilfs, &garbage_list, 1);
 }
+
+int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr)
+{
+	struct nilfs_transaction_info ti;
+	struct super_block *sb = bmap->b_inode->i_sb;
+	struct the_nilfs *nilfs = sb->s_fs_info;
+	struct nilfs_sc_info *sci = nilfs->ns_writer;
+	struct inode *dat = nilfs->ns_dat;
+	int ret = 0;
+
+	BUG_ON(!sci);
+
+	// TODO
+	// check if we need gcflag set
+	nilfs_transaction_lock(sb, &ti, 1);
+
+	BUG_ON((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0);
+	BUG_ON((ret = nilfs_segctor_do_construct(sci, SC_FLUSH_DAT) < 0));
+
+	nilfs_transaction_unlock(sb);
+
+	return ret;
+}

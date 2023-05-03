@@ -1266,9 +1266,8 @@ out:
 static int nilfs_ioctl_dedup(struct inode *inode, struct file *filp,
 			     void __user *argp)
 {
-	struct super_block *sb = inode->i_sb;
-	struct nilfs_transaction_info ti;
 	struct nilfs_argv argv;
+	struct the_nilfs *nilfs = inode->i_sb->s_fs_info;
 	size_t length;
 	void *base;
 	void *kbuf;
@@ -1308,13 +1307,12 @@ static int nilfs_ioctl_dedup(struct inode *inode, struct file *filp,
 		goto out_free;
 	}
 
-	nilfs_transaction_begin(sb, &ti, 0);
-	ret = nilfs_dedup(inode, kbuf, argv.v_nmembs);
+	if (test_and_set_bit(THE_NILFS_GC_RUNNING, &nilfs->ns_flags)) {
+		ret = -EBUSY;
+		goto out_free;
+	}
 
-	if (unlikely(ret < 0))
-		nilfs_transaction_abort(sb);
-	else
-		nilfs_transaction_commit(sb);
+	ret = nilfs_dedup(inode, kbuf, argv.v_nmembs);
 
 out_free:
 	vfree(kbuf);

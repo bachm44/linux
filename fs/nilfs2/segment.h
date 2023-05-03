@@ -233,9 +233,9 @@ extern int nilfs_construct_dsync_segment(struct super_block *, struct inode *,
 extern void nilfs_flush_segment(struct super_block *, ino_t);
 extern int nilfs_clean_segments(struct super_block *, struct nilfs_argv *,
 				void **);
-
 int nilfs_attach_log_writer(struct super_block *sb, struct nilfs_root *root);
 void nilfs_detach_log_writer(struct super_block *sb);
+int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr);
 
 /* recovery.c */
 extern int nilfs_read_super_root_block(struct the_nilfs *, sector_t,
