@@ -516,8 +516,6 @@ ssize_t nilfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	struct inode *inode = file_inode(file);
 	struct super_block *sb = inode->i_sb;
 
-	nilfs_info(sb, "%s", __func__);
-
 	if (is_deduplicated(inode)) {
 		set_bit(NILFS_I_NODEDUP, &NILFS_I(inode)->i_state);
 

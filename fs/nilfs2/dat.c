@@ -417,8 +417,6 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 	}
 	*blocknrp = blocknr;
 
-	nilfs_info(dat->i_sb, "%s: vblocknr=%ld -> blocknr=%ld", __func__, vblocknr, blocknr);
-
  out:
 	kunmap_atomic(kaddr);
 	brelse(entry_bh);
