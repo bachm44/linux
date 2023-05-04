@@ -1117,7 +1117,6 @@ void nilfs_dirty_inode(struct inode *inode, int flags)
 {
 	struct nilfs_transaction_info ti;
 	struct nilfs_mdt_info *mdi = NILFS_MDT(inode);
-	nilfs_info(inode->i_sb, "%s", __func__);
 
 	if (is_bad_inode(inode)) {
 		nilfs_warn(inode->i_sb,

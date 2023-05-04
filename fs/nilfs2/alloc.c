@@ -363,7 +363,6 @@ void *nilfs_palloc_block_get_entry(const struct inode *inode, __u64 nr,
 {
 	unsigned long entry_offset, group_offset;
 
-	nilfs_info(inode->i_sb, "%s", __func__);
 	nilfs_palloc_group(inode, nr, &group_offset);
 	entry_offset = group_offset % NILFS_MDT(inode)->mi_entries_per_block;
 
