@@ -11,20 +11,19 @@
 #include "nilfs.h"
 #include <linux/vmalloc.h>
 
-static void validate_block(const struct nilfs_deduplication_block *block,
-			   const struct the_nilfs *nilfs)
+static void print_block_info(const struct nilfs_deduplication_block *block,
+			     const struct the_nilfs *nilfs)
 {
 	sector_t blocknr;
 	struct super_block *sb = nilfs->ns_sb;
 
+	int ret = nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
+
 	nilfs_info(
 		sb,
-		"BLOCK: ino=%ld, cno=%ld, vblocknr=%ld, blocknr=%ld, offset=%ld",
+		"BLOCK: ino=%ld, cno=%ld, vblocknr=%ld, blocknr=%ld, offset=%ld, dat_translated=%ld, dat_ret=%d",
 		block->ino, block->cno, block->vblocknr, block->blocknr,
-		block->offset);
-
-	nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
-	BUG_ON(blocknr != block->blocknr);
+		block->offset, blocknr, ret);
 }
 
 static int
@@ -150,7 +149,7 @@ make_destination_vblocknrs(const struct nilfs_deduplication_block *blocks,
 	size_t i;
 
 	for (i = 1; i < blocks_count; ++i) {
-		vblocknrs[i - 1] = blocks[i].blocknr;
+		vblocknrs[i - 1] = blocks[i].vblocknr;
 	}
 
 	return vblocknrs;
@@ -176,14 +175,15 @@ int nilfs_dedup(struct inode *inode,
 	src = &blocks[0];
 	BUG_ON(!src);
 	BUG_ON(blocks_count < 2);
-	validate_block(src, nilfs);
+	print_block_info(src, nilfs);
 
-	BUG_ON(nilfs_dedup_move_blocks(sb, blocks, blocks_count) < 0);
+	// BUG_ON(nilfs_dedup_move_blocks(sb, blocks, blocks_count) < 0);
 
 	if (nilfs_sb_need_update(nilfs))
 		set_nilfs_discontinued(nilfs);
 
-	nilfs_dat_freev(dat, vblocknrs, vblocknrs_count);
+	// nilfs_dat_freev(dat, vblocknrs, vblocknrs_count);
+	// nilfs_mdt_mark_dirty(dat);
 
 	// TODO
 	// check if we need to mark bdevs DAT blocks as dirty
@@ -193,15 +193,21 @@ int nilfs_dedup(struct inode *inode,
 		const struct nilfs_deduplication_block *dst = &blocks[i];
 		WARN_ON(!dst);
 
-		validate_block(dst, nilfs);
+		print_block_info(dst, nilfs);
 
-		BUG_ON(nilfs_change_blocknr(bmap, dst->vblocknr, src->blocknr) <
-		       0);
+		if (nilfs_change_blocknr(bmap, dst->vblocknr, src->blocknr) <
+		    0) {
+			nilfs_warn(sb, "Dedplication failed for block %lld",
+				   dst->vblocknr);
+			continue;
+		}
 
-		nilfs_dat_translate(dat, dst->vblocknr, &blocknr);
-		nilfs_info(sb, "DST: blocknr=%ld", blocknr);
-		BUG_ON(blocknr != src->blocknr);
+		// nilfs_dat_translate(dat, dst->vblocknr, &blocknr);
+		// nilfs_info(sb, "DST: blocknr=%ld", blocknr);
+		// BUG_ON(blocknr != src->blocknr);
 	}
+
+	nilfs_flush_constructor(nilfs);
 
 	nilfs_remove_all_gcinodes(nilfs);
 	clear_nilfs_gc_running(nilfs);

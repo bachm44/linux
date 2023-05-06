@@ -692,6 +692,10 @@ int nilfs_count_free_blocks(struct the_nilfs *nilfs, sector_t *nblocks)
 
 	ncleansegs = nilfs_sufile_get_ncleansegs(nilfs->ns_sufile);
 	*nblocks = (sector_t)ncleansegs * nilfs->ns_blocks_per_segment;
+
+	nilfs_info(nilfs->ns_sb, "Occupied blocks: %lld",
+		   nilfs_sufile_count_occupied_blocks(nilfs->ns_sufile));
+
 	return 0;
 }
 

@@ -2843,10 +2843,21 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	BUG_ON((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0);
-	BUG_ON((ret = nilfs_segctor_do_construct(sci, SC_FLUSH_DAT) < 0));
+	if((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0)
+		goto out;
 
+// FIXME TODO
+// Check if we can execute this only once not for each block.
+// This may reduce number of created segments
+	// if((ret = nilfs_segctor_do_construct(sci, SC_FLUSH_DAT) < 0))
+	// 	goto out;
+
+out:
 	nilfs_transaction_unlock(sb);
-
 	return ret;
+}
+
+int nilfs_flush_constructor(struct the_nilfs *nilfs)
+{
+	return nilfs_segctor_do_construct(nilfs->ns_writer, SC_FLUSH_DAT);
 }
