@@ -1271,7 +1271,7 @@ static int nilfs_ioctl_dedup(struct inode *inode, struct file *filp,
 	size_t length;
 	void *base;
 	void *kbuf;
-	int ret;
+	int ret = 0;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;

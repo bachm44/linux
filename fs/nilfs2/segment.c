@@ -2828,6 +2828,103 @@ void nilfs_detach_log_writer(struct super_block *sb)
 	nilfs_dispose_list(nilfs, &garbage_list, 1);
 }
 
+static int nilfs_segctor_move_block(struct nilfs_sc_info *sci)
+{
+	struct the_nilfs *nilfs = sci->sc_super->s_fs_info;
+	const int mode = SC_FLUSH_DAT;
+	int err;
+
+	nilfs_sc_cstage_set(sci, NILFS_ST_INIT);
+	sci->sc_cno = nilfs->ns_cno;
+
+	err = nilfs_segctor_collect_dirty_files(sci, nilfs);
+	if (unlikely(err))
+		goto out;
+
+	if (nilfs_test_metadata_dirty(nilfs, sci->sc_root))
+		set_bit(NILFS_SC_DIRTY, &sci->sc_flags);
+
+	if (nilfs_segctor_clean(sci))
+		goto out;
+
+	do {
+		sci->sc_stage.flags &= ~NILFS_CF_HISTORY_MASK;
+
+		err = nilfs_segctor_begin_construction(sci, nilfs);
+		if (unlikely(err))
+			goto out;
+
+		/* Update time stamp */
+		sci->sc_seg_ctime = ktime_get_real_seconds();
+
+		err = nilfs_segctor_collect(sci, nilfs, mode);
+		if (unlikely(err))
+			goto failed;
+
+		/* Avoid empty segment */
+		if (nilfs_sc_cstage_get(sci) == NILFS_ST_DONE &&
+		    nilfs_segbuf_empty(sci->sc_curseg)) {
+			nilfs_segctor_abort_construction(sci, nilfs, 1);
+			goto out;
+		}
+
+		err = nilfs_segctor_assign(sci, mode);
+		if (unlikely(err))
+			goto failed;
+
+		if (sci->sc_stage.flags & NILFS_CF_IFILE_STARTED)
+			nilfs_segctor_fill_in_file_bmap(sci);
+
+		if (mode == SC_LSEG_SR &&
+		    nilfs_sc_cstage_get(sci) >= NILFS_ST_CPFILE) {
+			err = nilfs_segctor_fill_in_checkpoint(sci);
+			if (unlikely(err))
+				goto failed_to_write;
+
+			nilfs_segctor_fill_in_super_root(sci, nilfs);
+		}
+		nilfs_segctor_update_segusage(sci, nilfs->ns_sufile);
+
+		/* Write partial segments */
+		nilfs_segctor_prepare_write(sci);
+
+		nilfs_add_checksums_on_logs(&sci->sc_segbufs,
+					    nilfs->ns_crc_seed);
+
+		err = nilfs_segctor_write(sci, nilfs);
+		if (unlikely(err))
+			goto failed_to_write;
+
+		if (nilfs_sc_cstage_get(sci) == NILFS_ST_DONE ||
+		    nilfs->ns_blocksize_bits != PAGE_SHIFT) {
+			/*
+			 * At this point, we avoid double buffering
+			 * for blocksize < pagesize because page dirty
+			 * flag is turned off during write and dirty
+			 * buffers are not properly collected for
+			 * pages crossing over segments.
+			 */
+			err = nilfs_segctor_wait(sci);
+			if (err)
+				goto failed_to_write;
+		}
+	} while (nilfs_sc_cstage_get(sci) != NILFS_ST_DONE);
+
+out:
+	nilfs_segctor_drop_written_files(sci, nilfs);
+	return err;
+
+failed_to_write:
+	if (sci->sc_stage.flags & NILFS_CF_IFILE_STARTED)
+		nilfs_redirty_inodes(&sci->sc_dirty_files);
+
+failed:
+	if (nilfs_doing_gc())
+		nilfs_redirty_inodes(&sci->sc_gc_inodes);
+	nilfs_segctor_abort_construction(sci, nilfs, err);
+	goto out;
+}
+
 int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr)
 {
 	struct nilfs_transaction_info ti;
@@ -2843,21 +2940,19 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	if((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0)
+	if((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0) {
+		nilfs_warn(sb, "nilfs_dat_move failed");
+		nilfs_segctor_abort_construction(sci, nilfs, ret);
+		nilfs_mdt_clear_dirty(dat);
 		goto out;
+	}
 
 // FIXME TODO
 // Check if we can execute this only once not for each block.
 // This may reduce number of created segments
-	// if((ret = nilfs_segctor_do_construct(sci, SC_FLUSH_DAT) < 0))
-	// 	goto out;
+	ret = nilfs_segctor_move_block(sci);
 
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;
-}
-
-int nilfs_flush_constructor(struct the_nilfs *nilfs)
-{
-	return nilfs_segctor_do_construct(nilfs->ns_writer, SC_FLUSH_DAT);
 }
