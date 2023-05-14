@@ -169,4 +169,7 @@ static inline void nilfs_destroy_logs(struct list_head *logs)
 	nilfs_truncate_logs(logs, NULL);
 }
 
+int nilfs_segbuf_write_bh(struct buffer_head *bh,
+			      struct the_nilfs *nilfs);
+
 #endif /* _NILFS_SEGBUF_H */

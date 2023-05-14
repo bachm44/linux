@@ -8,6 +8,7 @@
  *
  */
 
+#include "linux/completion.h"
 #include <linux/buffer_head.h>
 #include <linux/writeback.h>
 #include <linux/crc32.h>
@@ -436,6 +437,95 @@ static int nilfs_segbuf_write(struct nilfs_segment_buffer *segbuf,
 	}
 
  failed_bio:
+	return res;
+}
+
+static void nilfs_segbuf_prepare_write_bh(struct nilfs_write_info* wi, struct buffer_head *bh)
+{
+	wi->bio = NULL;
+	wi->rest_blocks = 1;
+	wi->max_pages = BIO_MAX_VECS;
+	wi->nr_vecs = min(wi->max_pages, wi->rest_blocks);
+	wi->start = wi->end = 0;
+	wi->blocknr = bh->b_blocknr;
+}
+
+static int nilfs_submit_bh(struct nilfs_write_info *wi, struct buffer_head *bh)
+{
+	int len;
+
+	BUG_ON(wi->nr_vecs <= 0);
+	if (!wi->bio) {
+		wi->bio = bio_alloc(wi->nilfs->ns_bdev, wi->nr_vecs,
+				    REQ_OP_WRITE, GFP_NOIO);
+		wi->bio->bi_iter.bi_sector = (wi->blocknr + wi->end) <<
+			(wi->nilfs->ns_blocksize_bits - 9);
+	}
+
+	len = bio_add_page(wi->bio, bh->b_page, bh->b_size, bh_offset(bh));
+	if (len == bh->b_size) {
+		wi->end++;
+		return 0;
+	}
+	nilfs_warn(wi->nilfs->ns_sb, "submit bh failed");
+	return -ENOMEM;
+}
+
+static int nilfs_submit_bio(struct nilfs_write_info *wi)
+{
+	struct bio *bio = wi->bio;
+	struct nilfs_segment_buffer *segbuf;
+
+	segbuf = nilfs_segbuf_new(wi->nilfs->ns_sb);
+
+	bio->bi_end_io = nilfs_end_bio_write;
+	bio->bi_private = segbuf;
+	submit_bio(bio);
+	segbuf->sb_nbio++;
+
+	nilfs_info(segbuf->sb_super, "Waiting for bio completion");
+
+	do {
+		wait_for_completion(&segbuf->sb_bio_event);
+	} while (--segbuf->sb_nbio > 0);
+
+	nilfs_info(segbuf->sb_super, "Waiting for bio completion completed");
+
+	if (unlikely(atomic_read(&segbuf->sb_err) > 0)) {
+		nilfs_err(
+			segbuf->sb_super,
+			"I/O error writing log (start-blocknr=%llu, block-count=%lu) in segment %llu",
+			(unsigned long long)segbuf->sb_pseg_start,
+			segbuf->sb_sum.nblocks,
+			(unsigned long long)segbuf->sb_segnum);
+		return -EIO;
+	}
+
+	wi->bio = NULL;
+	wi->rest_blocks -= wi->end - wi->start;
+	wi->nr_vecs = min(wi->max_pages, wi->rest_blocks);
+	wi->start = wi->end;
+	return 0;
+}
+
+int nilfs_segbuf_write_bh(struct buffer_head *bh,
+			      struct the_nilfs *nilfs)
+{
+	int res = 0;
+	struct nilfs_write_info wi;
+
+	wi.nilfs = nilfs;
+	nilfs_segbuf_prepare_write_bh(&wi, bh);
+
+	res = nilfs_submit_bh(&wi, bh);
+	if (unlikely(res))
+		return res;
+
+	BUG_ON(!(wi.bio));
+
+	wi.bio->bi_opf |= REQ_SYNC;
+	res = nilfs_submit_bio(&wi);
+
 	return res;
 }
 
