@@ -483,13 +483,9 @@ static int nilfs_submit_bio(struct nilfs_write_info *wi)
 	submit_bio(bio);
 	segbuf->sb_nbio++;
 
-	nilfs_info(segbuf->sb_super, "Waiting for bio completion");
-
 	do {
 		wait_for_completion(&segbuf->sb_bio_event);
 	} while (--segbuf->sb_nbio > 0);
-
-	nilfs_info(segbuf->sb_super, "Waiting for bio completion completed");
 
 	if (unlikely(atomic_read(&segbuf->sb_err) > 0)) {
 		nilfs_err(
@@ -500,6 +496,8 @@ static int nilfs_submit_bio(struct nilfs_write_info *wi)
 			(unsigned long long)segbuf->sb_segnum);
 		return -EIO;
 	}
+
+	nilfs_segbuf_free(segbuf);
 
 	wi->bio = NULL;
 	wi->rest_blocks -= wi->end - wi->start;

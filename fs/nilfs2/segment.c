@@ -2833,6 +2833,7 @@ static void nilfs_segctor_prepare_write_bh(struct buffer_head *bh)
 {
 	struct page *bd_page = NULL, *fs_page = NULL;
 
+// TODO check which execution path is taken and which ifs are needed
 	if (bh->b_page != bd_page) {
 		if (bd_page) {
 			lock_page(bd_page);
