@@ -130,5 +130,6 @@ static inline int nilfs_sufile_set_error(struct inode *sufile, __u64 segnum)
 }
 
 unsigned long nilfs_sufile_count_occupied_blocks(struct inode *sufile);
+int nilfs_sufile_decrement_nblocks(struct inode *sufile, __u64 segnum, struct buffer_head **out);
 
 #endif /* _NILFS_SUFILE_H */

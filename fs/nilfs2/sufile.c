@@ -872,48 +872,6 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 	return ret;
 }
 
-unsigned long nilfs_sufile_count_occupied_blocks(struct inode *sufile)
-{
-	unsigned long result = 0;
-	struct buffer_head *su_bh;
-	struct nilfs_segment_usage *su;
-	unsigned long segnum = 0;
-	size_t susz = NILFS_MDT(sufile)->mi_entry_size;
-	struct the_nilfs *nilfs = sufile->i_sb->s_fs_info;
-	void *kaddr;
-	unsigned long nsegs, segusages_per_block;
-	ssize_t n;
-	int ret, i, j;
-
-	down_read(&NILFS_MDT(sufile)->mi_sem);
-
-	segusages_per_block = nilfs_sufile_segment_usages_per_block(sufile);
-	nsegs = nilfs_sufile_get_nsegments(sufile);
-	for (i = 0; i < nsegs; i += n, segnum += n) {
-		n = min_t(unsigned long,
-			  segusages_per_block -
-				  nilfs_sufile_get_offset(sufile, segnum),
-			  nsegs - i);
-		ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0,
-							   &su_bh);
-		if (ret < 0) {
-			continue;
-		}
-
-		kaddr = kmap_atomic(su_bh->b_page);
-		su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh,
-							  kaddr);
-		for (j = 0; j < n; j++, su = (void *)su + susz) {
-			result += le32_to_cpu(su->su_nblocks);
-		}
-
-		kunmap_atomic(kaddr);
-		brelse(su_bh);
-	}
-
-	up_read(&NILFS_MDT(sufile)->mi_sem);
-	return result;
-}
 /**
  * nilfs_sufile_set_suinfo - sets segment usage info
  * @sufile: inode of segment usage file
@@ -1262,4 +1220,103 @@ int nilfs_sufile_read(struct super_block *sb, size_t susize,
  failed:
 	iget_failed(sufile);
 	return err;
+}
+
+unsigned long nilfs_sufile_count_occupied_blocks(struct inode *sufile)
+{
+	unsigned long result = 0;
+	struct buffer_head *su_bh;
+	struct nilfs_segment_usage *su;
+	unsigned long segnum = 0;
+	size_t susz = NILFS_MDT(sufile)->mi_entry_size;
+	void *kaddr;
+	unsigned long nsegs, segusages_per_block;
+	ssize_t n;
+	int ret, i, j;
+
+	down_read(&NILFS_MDT(sufile)->mi_sem);
+
+	segusages_per_block = nilfs_sufile_segment_usages_per_block(sufile);
+	nsegs = nilfs_sufile_get_nsegments(sufile);
+	for (i = 0; i < nsegs; i += n, segnum += n) {
+		n = min_t(unsigned long,
+			  segusages_per_block -
+				  nilfs_sufile_get_offset(sufile, segnum),
+			  nsegs - i);
+		ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0,
+							   &su_bh);
+		if (ret < 0) {
+			continue;
+		}
+
+		kaddr = kmap_atomic(su_bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh,
+							  kaddr);
+		for (j = 0; j < n; j++, su = (void *)su + susz) {
+			result += le32_to_cpu(su->su_nblocks);
+		}
+
+		kunmap_atomic(kaddr);
+		brelse(su_bh);
+	}
+
+	up_read(&NILFS_MDT(sufile)->mi_sem);
+	return result;
+}
+
+static __le32 nilfs_sufile_get_nblocks(struct inode *sufile, __u64 segnum, __u32 *out)
+{
+	struct buffer_head *bh = NULL;
+	struct nilfs_segment_usage *su = NULL;
+	void *kaddr = NULL;
+	int ret = 0;
+
+	ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0, &bh);
+	if (ret < 0)
+		goto out;
+
+	kaddr = kmap_atomic(bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, bh, kaddr);
+	WARN_ON(nilfs_segment_usage_error(su));
+	*out = su->su_nblocks;
+	kunmap_atomic(kaddr);
+
+out:
+	brelse(bh);
+	return ret;
+}
+
+int nilfs_sufile_decrement_nblocks(struct inode *sufile, __u64 segnum, struct buffer_head **out)
+{
+	int ret = 0;
+	__le32 current_nblocks = 0;
+	struct buffer_head *bh = NULL;
+	struct nilfs_segment_usage *su = NULL;
+	void *kaddr = NULL;
+	
+	*out = NULL;
+
+	ret = nilfs_sufile_get_nblocks(sufile, segnum, &current_nblocks);
+	if (ret < 0)
+		return ret;
+	
+	nilfs_info(sufile->i_sb, "decrementing segment usage to %ld", current_nblocks - 1);
+
+	down_write(&NILFS_MDT(sufile)->mi_sem);
+	ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0, &bh);
+	if (ret < 0)
+		goto out_sem;
+
+	kaddr = kmap_atomic(bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, bh, kaddr);
+	WARN_ON(nilfs_segment_usage_error(su));
+	su->su_nblocks = cpu_to_le32(current_nblocks - 1);
+	kunmap_atomic(kaddr);
+
+	mark_buffer_dirty(bh);
+	*out = bh;
+
+out_sem:
+	up_write(&NILFS_MDT(sufile)->mi_sem);
+	return ret;
 }

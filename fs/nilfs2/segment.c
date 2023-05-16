@@ -2897,6 +2897,58 @@ static void nilfs_segctor_complete_write_bh(struct buffer_head *bh, struct the_n
 	nilfs_end_page_io(fs_page, 0);
 }
 
+static int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs)
+{
+	int ret = 0;
+
+	nilfs_segctor_prepare_write_bh(bh);
+	ret = nilfs_segbuf_write_bh(bh, nilfs);
+
+	if (ret < 0)
+		return ret;
+
+	nilfs_segctor_complete_write_bh(bh, nilfs);
+	return ret;
+}
+
+static int nilfs_segctor_write_block(sector_t vblocknr, struct the_nilfs *nilfs)
+{
+	struct buffer_head *bh = NULL;
+	struct inode *dat = nilfs->ns_dat;
+	int ret = 0;
+
+	ret = nilfs_palloc_get_entry_block(dat, vblocknr, 0, &bh);
+	if (ret < 0)
+		goto out;
+
+	ret = nilfs_segctor_write_bh(bh, nilfs);
+
+out:
+	brelse(bh);
+	return ret;
+}
+
+static int nilfs_segctor_decrement_nblocks(struct inode *sufile)
+{
+	struct super_block *sb = sufile->i_sb;
+	struct the_nilfs *nilfs = sb->s_fs_info;
+	struct buffer_head *out_sufile_bh = NULL;
+	const __u64 segnum = nilfs->ns_segnum;
+	int ret = 0;
+
+	ret = nilfs_sufile_decrement_nblocks(sufile, segnum, &out_sufile_bh);
+	if (ret < 0 || !out_sufile_bh)
+		goto out;
+
+	// writing buffer head manually in order to avoid double sufile update
+	// by segctor
+	ret = nilfs_segctor_write_bh(out_sufile_bh, nilfs);
+
+out:
+	brelse(out_sufile_bh);
+	return ret;
+}
+
 int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr)
 {
 	struct nilfs_transaction_info ti;
@@ -2904,33 +2956,28 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
-	struct buffer_head *entry_bh = NULL;
-
+	struct inode *sufile = nilfs->ns_sufile;
 	int ret = 0;
-
-	BUG_ON(!sci);
 
 	// TODO
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	if((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0) {
+	ret = nilfs_dat_move(dat, vblocknr, blocknr);
+	if(ret < 0) {
 		nilfs_warn(sb, "nilfs_dat_move failed");
 		nilfs_segctor_abort_construction(sci, nilfs, ret);
 		nilfs_mdt_clear_dirty(dat);
 		goto out;
 	}
 
-	ret = nilfs_palloc_get_entry_block(dat, vblocknr, 0, &entry_bh);
+	ret = nilfs_segctor_write_block(vblocknr, nilfs);
 	if (ret < 0)
 		goto out;
 
-	nilfs_segctor_prepare_write_bh(entry_bh);
-	ret = nilfs_segbuf_write_bh(entry_bh, nilfs);
-	nilfs_segctor_complete_write_bh(entry_bh, nilfs);
+	ret = nilfs_segctor_decrement_nblocks(sufile);
 
 out:
-	brelse(entry_bh);
 	nilfs_transaction_unlock(sb);
 	return ret;
 }
