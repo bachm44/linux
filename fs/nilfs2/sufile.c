@@ -1293,7 +1293,7 @@ int nilfs_sufile_decrement_nblocks(struct inode *sufile, __u64 segnum, struct bu
 	struct buffer_head *bh = NULL;
 	struct nilfs_segment_usage *su = NULL;
 	void *kaddr = NULL;
-	
+
 	*out = NULL;
 
 	ret = nilfs_sufile_get_nblocks(sufile, segnum, &current_nblocks);
