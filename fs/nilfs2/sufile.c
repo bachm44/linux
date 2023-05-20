@@ -1299,7 +1299,7 @@ int nilfs_sufile_decrement_nblocks(struct inode *sufile, __u64 segnum, struct bu
 	ret = nilfs_sufile_get_nblocks(sufile, segnum, &current_nblocks);
 	if (ret < 0)
 		return ret;
-
+	
 	nilfs_info(sufile->i_sb, "decrementing segment usage to %ld", current_nblocks - 1);
 
 	down_write(&NILFS_MDT(sufile)->mi_sem);
