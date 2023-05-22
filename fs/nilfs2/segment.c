@@ -2929,27 +2929,6 @@ out:
 	return ret;
 }
 
-static int nilfs_segctor_decrement_nblocks(struct inode *sufile)
-{
-	struct super_block *sb = sufile->i_sb;
-	struct the_nilfs *nilfs = sb->s_fs_info;
-	struct buffer_head *out_sufile_bh = NULL;
-	const __u64 segnum = nilfs->ns_segnum;
-	int ret = 0;
-
-	ret = nilfs_sufile_decrement_nblocks(sufile, segnum, &out_sufile_bh);
-	if (ret < 0 || !out_sufile_bh)
-		goto out;
-
-	// writing buffer head manually in order to avoid double sufile update
-	// by segctor
-	ret = nilfs_segctor_write_bh(out_sufile_bh, nilfs);
-
-out:
-	brelse(out_sufile_bh);
-	return ret;
-}
-
 int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr)
 {
 	struct nilfs_transaction_info ti;
@@ -2979,10 +2958,9 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	if (ret < 0)
 		goto out;
 
-	nilfs_sufile_cleanup_blocks(sufile, free_blocknr);
-		// ret = nilfs_segctor_decrement_nblocks(sufile);
+	ret = nilfs_sufile_cleanup_blocks(sufile, free_blocknr);
 
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;
-	}
+}

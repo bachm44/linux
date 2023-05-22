@@ -715,7 +715,7 @@ int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilf
 	}
 
 failed:
-	return ret;	
+	return ret;
 }
 
 static void nilfs_finish_roll_forward(struct the_nilfs *nilfs,
