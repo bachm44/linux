@@ -17,6 +17,7 @@
 #include "segment.h"
 #include "sufile.h"
 #include "page.h"
+#include "dedup.h"
 #include "segbuf.h"
 
 /*
@@ -694,7 +695,7 @@ static int nilfs_do_roll_forward(struct the_nilfs *nilfs,
  * @sum: log summary information
  * @head: list head to add nilfs_recovery_block struct
  */
-static int nilfs_scan_log(struct the_nilfs *nilfs, sector_t start_blocknr,
+static int nilfs_scan_psegment_blocks(struct the_nilfs *nilfs, sector_t start_blocknr,
 				struct nilfs_segment_summary *sum,
 				struct list_head *head)
 {
@@ -734,8 +735,6 @@ static int nilfs_scan_log(struct the_nilfs *nilfs, sector_t start_blocknr,
 			struct nilfs_recovery_block *rb;
 
 			if (ino == NILFS_DAT_INO) {
-				// FIXME
-				// offset calculation
 				struct nilfs_binfo_dat *binfo;
 
 				binfo = nilfs_read_summary_info(nilfs, &bh, &offset,
@@ -751,7 +750,7 @@ static int nilfs_scan_log(struct the_nilfs *nilfs, sector_t start_blocknr,
 				rb->ino = ino;
 				rb->blocknr = blocknr++;
 				rb->vblocknr = -1;
-				rb->blkoff = le64_to_cpu(*(__le64 *)binfo);
+				rb->blkoff = -1;
 				list_add_tail(&rb->list, head);
 			} else {
 				struct nilfs_binfo_v *binfo;
@@ -799,7 +798,7 @@ int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilf
 	sector_t seg_start = 0;
 	sector_t seg_end = 0;
 	int ret = 0;
-	LIST_HEAD(dsync_blocks);
+	LIST_HEAD(psegment_blocks);
 
 	nilfs_get_segment_range(nilfs, segnum, &seg_start, &seg_end);
 
@@ -809,17 +808,18 @@ int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilf
 		goto failed;
 	}
 
-	ret = nilfs_scan_log(nilfs, pseg_start, sum, &dsync_blocks);
+	ret = nilfs_scan_psegment_blocks(nilfs, pseg_start, sum, &psegment_blocks);
 
-	last_rb = list_last_entry(&dsync_blocks, struct nilfs_recovery_block, list);
+	last_rb = list_last_entry(&psegment_blocks, struct nilfs_recovery_block, list);
 	out->ino = last_rb->ino;
 	out->blocknr = last_rb->blocknr;
 	out->vblocknr = last_rb->vblocknr;
 	out->offset = last_rb->blkoff;
-	out->cno = -1; // don't care
+	out->cno = -1; // not needed
 
-	list_for_each_entry_safe(rb, n, &dsync_blocks, list) {
-		nilfs_info(sb, "entry: ino = %ld, blocknr = %ld, vblocknr = %ld, blockoff = %ld", rb->ino, rb->blocknr, rb->vblocknr, rb->blkoff);
+	nilfs_debug(sb, "entries in segnum = %ld", segnum);
+	list_for_each_entry_safe(rb, n, &psegment_blocks, list) {
+		nilfs_debug(sb, "entry: ino = %ld, blocknr = %ld, vblocknr = %ld, blockoff = %ld", rb->ino, rb->blocknr, rb->vblocknr, rb->blkoff);
 	}
 
 failed:

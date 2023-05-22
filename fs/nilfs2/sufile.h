@@ -130,8 +130,4 @@ static inline int nilfs_sufile_set_error(struct inode *sufile, __u64 segnum)
 }
 
 unsigned long nilfs_sufile_count_occupied_blocks(struct inode *sufile);
-int nilfs_sufile_cleanup_blocks(struct inode *sufile, sector_t free_blocknr);
-int nilfs_get_last_block_in_latest_psegment(
-	struct the_nilfs *nilfs, struct nilfs_deduplication_block *out);
-
 #endif /* _NILFS_SUFILE_H */

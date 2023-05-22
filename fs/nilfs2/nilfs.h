@@ -331,6 +331,8 @@ void __nilfs_error(struct super_block *sb, const char *function,
 	nilfs_msg(sb, KERN_WARNING, fmt, ##__VA_ARGS__)
 #define nilfs_info(sb, fmt, ...)					\
 	nilfs_msg(sb, KERN_INFO, fmt, ##__VA_ARGS__)
+#define nilfs_debug(sb, fmt, ...)					\
+	nilfs_msg(sb, KERN_DEBUG, fmt, ##__VA_ARGS__)
 
 extern struct nilfs_super_block *
 nilfs_read_super_block(struct super_block *, u64, int, struct buffer_head **);

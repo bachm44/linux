@@ -2936,7 +2936,6 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
-	struct inode *sufile = nilfs->ns_sufile;
 	sector_t free_blocknr;
 	int ret = 0;
 
@@ -2957,8 +2956,6 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	ret = nilfs_segctor_write_block(vblocknr, nilfs);
 	if (ret < 0)
 		goto out;
-
-	ret = nilfs_sufile_cleanup_blocks(sufile, free_blocknr);
 
 out:
 	nilfs_transaction_unlock(sb);
