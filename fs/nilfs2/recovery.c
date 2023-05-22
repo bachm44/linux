@@ -220,8 +220,17 @@ static int nilfs_validate_log(struct the_nilfs *nilfs, u64 seg_seq,
 		goto out;
 
 	ret = NILFS_SEG_FAIL_IO;
+	if (nilfs_compute_checksum(nilfs, bh_sum, &crc, sizeof(sum->ss_datasum),
+				   ((u64)nblock << nilfs->ns_blocksize_bits),
+				   bh_sum->b_blocknr, nblock))
+		goto out;
+	ret = NILFS_SEG_FAIL_CHECKSUM_FULL;
+	if (crc != le32_to_cpu(sum->ss_datasum))
+		goto out;
+
+	ret = 0;
 out:
-	return 0;
+	return ret;
 }
 
 /**
@@ -678,6 +687,105 @@ static int nilfs_do_roll_forward(struct the_nilfs *nilfs,
 	goto out;
 }
 
+/**
+ * nilfs_scan_dsync_log - get block information of a log written for data sync
+ * @nilfs: nilfs object
+ * @start_blocknr: start block number of the log
+ * @sum: log summary information
+ * @head: list head to add nilfs_recovery_block struct
+ */
+static int nilfs_scan_log(struct the_nilfs *nilfs, sector_t start_blocknr,
+				struct nilfs_segment_summary *sum,
+				struct list_head *head)
+{
+	struct buffer_head *bh;
+	unsigned int offset;
+	u32 nfinfo, sumbytes;
+	sector_t blocknr;
+	ino_t ino;
+	int err = -EIO;
+
+	nfinfo = le32_to_cpu(sum->ss_nfinfo);
+	if (!nfinfo)
+		return 0;
+
+	sumbytes = le32_to_cpu(sum->ss_sumbytes);
+	blocknr = start_blocknr + DIV_ROUND_UP(sumbytes, nilfs->ns_blocksize);
+	bh = __bread(nilfs->ns_bdev, start_blocknr, nilfs->ns_blocksize);
+	if (unlikely(!bh))
+		goto out;
+
+	offset = le16_to_cpu(sum->ss_bytes);
+	for (;;) {
+		unsigned long nblocks, ndatablk, nnodeblk;
+		struct nilfs_finfo *finfo;
+
+		finfo = nilfs_read_summary_info(nilfs, &bh, &offset,
+						sizeof(*finfo));
+		if (unlikely(!finfo))
+			goto out;
+
+		ino = le64_to_cpu(finfo->fi_ino);
+		nblocks = le32_to_cpu(finfo->fi_nblocks);
+		ndatablk = le32_to_cpu(finfo->fi_ndatablk);
+		nnodeblk = nblocks - ndatablk;
+
+		while (ndatablk-- > 0) {
+			struct nilfs_recovery_block *rb;
+
+			if (ino == NILFS_DAT_INO) {
+				// FIXME
+				// offset calculation
+				struct nilfs_binfo_dat *binfo;
+
+				binfo = nilfs_read_summary_info(nilfs, &bh, &offset,
+								sizeof(*binfo));
+				if (unlikely(!binfo))
+					goto out;
+
+				rb = kmalloc(sizeof(*rb), GFP_NOFS);
+				if (unlikely(!rb)) {
+					err = -ENOMEM;
+					goto out;
+				}
+				rb->ino = ino;
+				rb->blocknr = blocknr++;
+				rb->vblocknr = -1;
+				rb->blkoff = le64_to_cpu(*(__le64 *)binfo);
+				list_add_tail(&rb->list, head);
+			} else {
+				struct nilfs_binfo_v *binfo;
+				binfo = nilfs_read_summary_info(nilfs, &bh, &offset,
+								sizeof(*binfo));
+				if (unlikely(!binfo))
+					goto out;
+
+				rb = kmalloc(sizeof(*rb), GFP_NOFS);
+				if (unlikely(!rb)) {
+					err = -ENOMEM;
+					goto out;
+				}
+				rb->ino = ino;
+				rb->blocknr = blocknr++;
+				rb->vblocknr = le64_to_cpu(binfo->bi_vblocknr);
+				rb->blkoff = le64_to_cpu(binfo->bi_blkoff);
+				list_add_tail(&rb->list, head);
+			}
+		}
+		if (--nfinfo == 0)
+			break;
+		blocknr += nnodeblk; /* always 0 for data sync logs */
+		nilfs_skip_summary_info(nilfs, &bh, &offset, sizeof(__le64),
+					nnodeblk);
+		if (unlikely(!bh))
+			goto out;
+	}
+	err = 0;
+out:
+	brelse(bh); /* brelse(NULL) is just ignored */
+	return err;
+}
+
 int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilfs_deduplication_block *out)
 {
 	struct super_block *sb = nilfs->ns_sb;
@@ -701,7 +809,7 @@ int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilf
 		goto failed;
 	}
 
-	ret = nilfs_scan_dsync_log(nilfs, pseg_start, sum, &dsync_blocks);
+	ret = nilfs_scan_log(nilfs, pseg_start, sum, &dsync_blocks);
 
 	last_rb = list_last_entry(&dsync_blocks, struct nilfs_recovery_block, list);
 	out->ino = last_rb->ino;

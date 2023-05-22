@@ -29,7 +29,7 @@ static void read_block(const struct the_nilfs *nilfs,
 	lock_buffer(bh);
 	submit_bh(opf, bh);
 
-	nilfs_info(sb, "CONTENT: '%s'", bh->b_data);
+	// nilfs_info(sb, "CONTENT: '%s'", bh->b_data);
 
 	unlock_page(bh->b_page);
 	put_page(bh->b_page);

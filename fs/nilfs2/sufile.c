@@ -1270,12 +1270,22 @@ unsigned long nilfs_sufile_count_occupied_blocks(struct inode *sufile)
 	return result;
 }
 
+static blkcnt_t inode_block_count(const struct inode *inode)
+{
+	struct the_nilfs *nilfs = inode->i_sb->s_fs_info;
+	return DIV_ROUND_UP(inode->i_size, nilfs->ns_blocksize);
+}
+
 int nilfs_sufile_cleanup_blocks(struct inode *sufile, sector_t free_blocknr)
 {
 	int ret = 0;
 	struct super_block *sb = sufile->i_sb;
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_deduplication_block info;
+	struct inode *inode = NULL;
+	struct nilfs_root *root = rb_entry(nilfs->ns_cptree.rb_node, struct nilfs_root, rb_node);
+
+	BUG_ON(!root);
 
 	ret = nilfs_get_last_block_in_latest_psegment(nilfs, &info);
 	if (ret < 0)
@@ -1283,15 +1293,53 @@ int nilfs_sufile_cleanup_blocks(struct inode *sufile, sector_t free_blocknr)
 
 	nilfs_info(sb, "found block for relocation: ino = %ld, blocknr = %ld, vblocknr = %ld, offset = %ld", info.ino, info.blocknr, info.vblocknr, info.offset);
 
-	if (NILFS_VALID_INODE(sb, info.ino)) {
+	if (info.ino >= NILFS_FIRST_INO(sb)) {
 		// TODO
 		// handle normal blocks via nilfs_dat_move
 	} else {
-		// TODO
-		// handle special inode case
-		// page manipulation and stuff
-		// remember that vblocknr and offset are GARBAGE
+		if (info.ino == NILFS_DAT_INO) {
+			blkcnt_t offset;
+			blkcnt_t blknum;
+			blkcnt_t max_blocks;
+
+			inode = nilfs->ns_dat;
+			max_blocks = inode->i_blocks * nilfs->ns_blocksize;
+
+			for (offset = 0; offset < max_blocks; ++offset) {
+				ret = nilfs_bmap_lookup(NILFS_I(inode)->i_bmap, offset, &blknum);
+				if (unlikely(ret)) {
+					continue;
+				}
+
+				if (blknum == info.blocknr)
+					break;
+			}
+
+			nilfs_info(sb, "dat inode block with i_blocks = %ld, max_blocks = %ld, blocknr = %ld, offset = %ld", inode->i_blocks, max_blocks, info.blocknr, offset);
+
+			inode = NULL; // do not put ns_dat inode
+		} else {
+			// TODO
+			// remember that vblocknr and offset are GARBAGE
+			// handle different inode types
+
+			blkcnt_t block_count;
+			blkcnt_t block_number;
+
+			inode = nilfs_iget_locked(sb, NULL, info.ino);
+			if (IS_ERR(inode)) {
+				nilfs_error(sb, "cannot get ino: %d", PTR_ERR(inode));
+				return PTR_ERR(inode);
+			}
+
+			block_count = inode_block_count(inode);
+
+			for (block_number = 0; block_number < block_count; ++block_number) {
+
+			}
+		}
 	}
 
+	iput(inode);
 	return ret;
 }
