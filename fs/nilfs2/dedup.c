@@ -1,6 +1,7 @@
 #include "dedup.h"
 #include "bmap.h"
 #include "dat.h"
+#include "linux/nilfs2_ondisk.h"
 #include <linux/nilfs2_api.h>
 #include "mdt.h"
 #include "page.h"
@@ -182,7 +183,47 @@ nilfs_dedup_reclaim_move_buffer(struct the_nilfs *nilfs,
 				const struct nilfs_deduplication_block *block,
 				struct buffer_head *free_bh)
 {
-	int ret = -ENOSYS;
+	int ret = 0;
+	struct super_block *sb = nilfs->ns_sb;
+	struct inode *inode = nilfs->ns_dat;
+	struct buffer_head *out_bh = NULL;
+
+	if (block->ino == NILFS_DAT_INO) {
+		const bool is_create = true;
+
+		ret = nilfs_mdt_delete_block(nilfs->ns_dat, block->offset);
+		if (ret < 0) {
+			nilfs_warn(sb, "Failed to delete mdt block: ret = %d",
+				   ret);
+			return ret;
+		}
+
+		ret = nilfs_mdt_get_block(inode, block->offset, is_create, NULL,
+					  &out_bh);
+		if (ret < 0) {
+			nilfs_warn(
+				sb,
+				"Failed to replace buffer in mdt block: ret = %d",
+				ret);
+		}
+
+		BUG_ON(!out_bh);
+		nilfs_copy_buffer(out_bh, free_bh);
+
+		ret = nilfs_segctor_write_bh(out_bh, nilfs);
+		if (ret < 0) {
+			nilfs_warn(
+				sb,
+				"Failed to write candidate moved buffer: ret = %d",
+				ret);
+		}
+		brelse(out_bh);
+
+	} else {
+		// TODO
+		BUG();
+	}
+
 	return ret;
 }
 
@@ -243,11 +284,11 @@ static int nilfs_dedup_reclaim(struct the_nilfs *nilfs, sector_t free_blocknr)
 		return ret;
 	}
 
-	ret = nilfs_dedup_reclaim_move(nilfs, free_blocknr, &reclaim_candidate);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to move candidate: ret = %d", ret);
-		return ret;
-	}
+	// ret = nilfs_dedup_reclaim_move(nilfs, free_blocknr, &reclaim_candidate);
+	// if (ret < 0) {
+	// 	nilfs_warn(sb, "Failed to move candidate: ret = %d", ret);
+	// 	return ret;
+	// }
 
 	return ret;
 }
@@ -319,9 +360,10 @@ int nilfs_dedup(struct inode *inode,
 
 		nilfs_debug(sb, "After deduplication DST: ");
 		nilfs_dedup_print_block_info(dst, nilfs, inode);
-		nilfs_dat_translate(dat, dst->vblocknr, &blocknr);
 
+		nilfs_dat_translate(dat, dst->vblocknr, &blocknr);
 		BUG_ON(blocknr != src->blocknr);
+
 		++deduplicated;
 	}
 

@@ -246,4 +246,5 @@ int nilfs_salvage_orphan_logs(struct the_nilfs *nilfs, struct super_block *sb,
 			      struct nilfs_recovery_info *ri);
 extern void nilfs_dispose_segment_list(struct list_head *);
 
+int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs);
 #endif /* _NILFS_SEGMENT_H */

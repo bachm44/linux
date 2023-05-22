@@ -2898,7 +2898,7 @@ static void nilfs_segctor_complete_write_bh(struct buffer_head *bh, struct the_n
 	nilfs_end_page_io(fs_page, 0);
 }
 
-static int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs)
+int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs)
 {
 	int ret = 0;
 
