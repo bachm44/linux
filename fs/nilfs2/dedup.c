@@ -113,9 +113,8 @@ nilfs_dedup_reclaim_candidate_dat(struct the_nilfs *nilfs,
 	return ret;
 }
 
-static int
-nilfs_dedup_reclaim_candidate(struct the_nilfs *nilfs,
-			      struct nilfs_deduplication_block *out_info)
+static int nilfs_dedup_reclaim_fetch(struct the_nilfs *nilfs,
+				     struct nilfs_deduplication_block *out_info)
 {
 	int ret = 0;
 	struct super_block *sb = nilfs->ns_sb;
@@ -168,6 +167,68 @@ nilfs_dedup_reclaim_candidate(struct the_nilfs *nilfs,
 	return ret;
 }
 
+static int nilfs_dedup_block_buffer(struct the_nilfs *nilfs, sector_t blocknr,
+				    struct buffer_head **out)
+{
+	*out = __bread(nilfs->ns_bdev, blocknr, nilfs->ns_blocksize_bits);
+	if (!(*out))
+		return -ENOMEDIUM;
+
+	return 0;
+}
+
+static int
+nilfs_dedup_reclaim_move_buffer(struct the_nilfs *nilfs,
+				const struct nilfs_deduplication_block *block,
+				struct buffer_head *free_bh)
+{
+	int ret = -ENOSYS;
+	return ret;
+}
+
+static int
+nilfs_dedup_reclaim_move(struct the_nilfs *nilfs, sector_t free_blocknr,
+			 const struct nilfs_deduplication_block *block)
+{
+	int ret = 0;
+	struct super_block *sb = nilfs->ns_sb;
+	struct buffer_head *free_bh = NULL;
+	struct buffer_head *candidate_bh = NULL;
+
+	ret = nilfs_dedup_block_buffer(nilfs, free_blocknr, &free_bh);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to get free block buffer: ret = %d",
+			   ret);
+		goto out;
+	}
+
+	ret = nilfs_dedup_block_buffer(nilfs, block->blocknr, &candidate_bh);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to get candidate block buffer: ret = %d",
+			   ret);
+		goto out;
+	}
+
+	BUG_ON(!free_bh || !candidate_bh);
+
+	nilfs_copy_buffer(free_bh, candidate_bh);
+
+	BUG_ON(!free_bh || !candidate_bh);
+
+	ret = nilfs_dedup_reclaim_move_buffer(nilfs, block, free_bh);
+	if (ret < 0) {
+		nilfs_warn(sb,
+			   "Failed to move buffer in candidate inode: ret = %d",
+			   ret);
+		goto out;
+	}
+
+out:
+	brelse(candidate_bh);
+	brelse(free_bh);
+	return ret;
+}
+
 static int nilfs_dedup_reclaim(struct the_nilfs *nilfs, sector_t free_blocknr)
 {
 	int ret = 0;
@@ -176,9 +237,15 @@ static int nilfs_dedup_reclaim(struct the_nilfs *nilfs, sector_t free_blocknr)
 	// candidate block for moving into free_blocknr spot
 	struct nilfs_deduplication_block reclaim_candidate;
 
-	ret = nilfs_dedup_reclaim_candidate(nilfs, &reclaim_candidate);
+	ret = nilfs_dedup_reclaim_fetch(nilfs, &reclaim_candidate);
 	if (ret < 0) {
 		nilfs_warn(sb, "Failed to find candidate: ret = %d", ret);
+		return ret;
+	}
+
+	ret = nilfs_dedup_reclaim_move(nilfs, free_blocknr, &reclaim_candidate);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to move candidate: ret = %d", ret);
 		return ret;
 	}
 
@@ -194,7 +261,7 @@ int nilfs_dedup(struct inode *inode,
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct inode *dat = nilfs->ns_dat;
 	struct nilfs_bmap *bmap = NILFS_I(dat)->i_bmap;
-	sector_t blocknr;
+	sector_t blocknr = 0;
 	int ret = 0;
 	uint64_t deduplicated = 0;
 
