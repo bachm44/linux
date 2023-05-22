@@ -9,6 +9,7 @@
  */
 
 #include "alloc.h"
+#include "dat.h"
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/writeback.h>
@@ -2957,11 +2958,14 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
 	struct inode *sufile = nilfs->ns_sufile;
+	sector_t free_blocknr;
 	int ret = 0;
 
 	// TODO
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
+
+	nilfs_dat_translate(dat, vblocknr, &free_blocknr);
 
 	ret = nilfs_dat_move(dat, vblocknr, blocknr);
 	if(ret < 0) {
@@ -2975,9 +2979,10 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	if (ret < 0)
 		goto out;
 
-	ret = nilfs_segctor_decrement_nblocks(sufile);
+	nilfs_sufile_cleanup_blocks(sufile, free_blocknr);
+		// ret = nilfs_segctor_decrement_nblocks(sufile);
 
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;
-}
+	}

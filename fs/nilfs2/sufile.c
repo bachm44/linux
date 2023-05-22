@@ -8,6 +8,12 @@
  * Revised by Ryusuke Konishi.
  */
 
+#include <linux/nilfs2_api.h>
+#include <linux/nilfs2_ondisk.h>
+#include <linux/rbtree.h>
+#include "nilfs.h"
+#include "segbuf.h"
+#include "the_nilfs.h"
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/string.h>
@@ -1318,5 +1324,167 @@ int nilfs_sufile_decrement_nblocks(struct inode *sufile, __u64 segnum, struct bu
 
 out_sem:
 	up_write(&NILFS_MDT(sufile)->mi_sem);
+	return ret;
+}
+
+static unsigned long nilfs_sufile_blocks_in_segment(struct inode *sufile, unsigned long segnum, ssize_t n)
+{
+	unsigned long result = 0;
+	int ret;
+	int j;
+	void *kaddr = NULL;
+	const size_t susz = NILFS_MDT(sufile)->mi_entry_size;
+	struct nilfs_segment_usage *su = NULL;
+	struct buffer_head *su_bh = NULL;
+
+
+	down_read(&NILFS_MDT(sufile)->mi_sem);
+
+	ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0,
+							&su_bh);
+	if (ret < 0) {
+		return ret;
+	}
+
+	kaddr = kmap_atomic(su_bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh,
+							kaddr);
+	for (j = 0; j < n; j++, su = (void *)su + susz) {
+		result += le32_to_cpu(su->su_nblocks);
+	}
+
+	kunmap_atomic(kaddr);
+	brelse(su_bh);
+
+	up_read(&NILFS_MDT(sufile)->mi_sem);
+
+	return result;
+}
+
+struct nilfs_segment_block_info {
+	unsigned long segnum;
+	unsigned long nblocks;
+};
+
+static int nilfs_sufile_segment_block_info(struct inode *sufile, struct nilfs_segment_block_info *sbi)
+{
+	int ret = 0;
+	struct nilfs_sustat sustat;
+	ssize_t n = 0;
+	unsigned long segnum;
+	unsigned long segusages_per_block;
+	unsigned long nsegs;
+	unsigned long nblocks = 0;
+
+	ret = nilfs_sufile_get_stat(sufile, &sustat);
+	if (ret < 0)
+		return ret;
+
+	nsegs = sustat.ss_ndirtysegs;
+	segusages_per_block = nilfs_sufile_segment_usages_per_block(sufile);
+	// find last non empty segment block count
+	for (segnum = nsegs - 1; segnum >= 0; segnum -= n) {
+		n = min_t(unsigned long,
+			  segusages_per_block -
+				  nilfs_sufile_get_offset(sufile, segnum),
+			  nsegs - segnum);
+
+		nblocks = nilfs_sufile_blocks_in_segment(sufile, segnum, n);
+		if (nblocks != 0)
+			break;
+	}
+
+	BUG_ON(nblocks <= 0);
+
+	sbi->segnum = segnum;
+	sbi->nblocks = nblocks;
+
+	return ret;
+}
+
+static int nilfs_sufile_block_inode(struct inode *sufile, sector_t phy_blocknr, struct inode **inode)
+{
+	ino_t ino;
+	struct nilfs_root *root;
+	struct super_block *sb = sufile->i_sb;
+	struct the_nilfs *nilfs = sb->s_fs_info;
+	struct nilfs_inode_info *ii;
+	struct inode *i;
+	__u64 ptr;
+
+	nilfs_info(sb, "inspecting inodes");
+
+	// spin_lock(&nilfs->ns_cptree_lock);
+	root = rb_entry(nilfs->ns_cptree.rb_node, struct nilfs_root, rb_node);
+	BUG_ON(!root);
+	refcount_inc(&root->count);
+
+	// Since we are taking last blocknr in the filesystem,
+	// it should not contain inode with number greater than this
+	for (ino = NILFS_FIRST_INO(sb); ino <= phy_blocknr; ++ino) {
+		nilfs_info(sb, "inode %ld", ino);
+
+		i = nilfs_iget(nilfs->ns_sb, root, ino);
+		if (!i || IS_ERR(i))
+			return PTR_ERR(i);
+		
+		ii = NILFS_I(i);
+
+		if (nilfs_bmap_lookup(ii->i_bmap, phy_blocknr, &ptr) == 0) {
+			nilfs_info(sb, "found inode %ld with block %ld", ino, phy_blocknr);
+		}
+
+		iput(i);
+	}
+
+	// spin_unlock(&nilfs->ns_cptree_lock);
+
+	return 0;
+}
+
+int nilfs_sufile_cleanup_blocks(struct inode *sufile, sector_t free_blocknr)
+{
+	struct nilfs_segment_block_info sbi;
+	int ret = 0;
+	struct super_block *sb = sufile->i_sb;
+	struct the_nilfs *nilfs = sb->s_fs_info;
+	struct inode *inode;
+	struct nilfs_sustat sustat;
+	struct nilfs_deduplication_block info;
+	sector_t seg_start;
+	sector_t seg_end;
+	sector_t phy_blocknr;
+
+	// nilfs_sufile_get_stat(sufile, &sustat);
+	// nilfs_info(sb, "dirty_segments = %d, free_blocknr = %ld", sustat.ss_ndirtysegs, free_blocknr);
+
+	// ret = nilfs_sufile_segment_block_info(sufile, &sbi);
+	// if (ret < 0)
+	// 	goto out;
+
+
+	// nilfs_get_segment_range(nilfs, sbi.segnum, &seg_start, &seg_end);
+
+	// nilfs_info(sb, "found non-empty segment %ld with blockcnt = %ld, blocknr_start = %ld, blocknr_end %ld", sbi.segnum, sbi.nblocks, seg_start, seg_end);
+
+	// phy_blocknr = sbi.nblocks + seg_start - 1;
+	// ret = nilfs_sufile_block_inode(sufile, phy_blocknr, &inode);
+	// if (ret < 0)
+	// 	goto out;
+
+	ret = nilfs_get_last_block_in_latest_psegment(nilfs, &info);
+
+	nilfs_info(sb, "found block for relocation: ino = %ld, blocknr = %ld, vblocknr = %ld, offset = %ld", info.ino, info.blocknr, info.vblocknr, info.offset);
+
+	if (NILFS_VALID_INODE(sb, info.ino)) {
+		// TODO
+		// handle normal blocks via nilfs_dat_move
+	} else {
+		// TODO
+		// handle special inode case
+		// page manipulation and stuff
+		// remember that vblocknr and offset are GARBAGE
+	}
+
 	return ret;
 }

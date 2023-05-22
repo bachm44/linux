@@ -7,6 +7,7 @@
  * Written by Ryusuke Konishi.
  */
 
+#include <linux/nilfs2_api.h>
 #include <linux/buffer_head.h>
 #include <linux/blkdev.h>
 #include <linux/swap.h>
@@ -675,6 +676,46 @@ static int nilfs_do_roll_forward(struct the_nilfs *nilfs,
 		  "error %d roll-forwarding partial segment at blocknr = %llu",
 		  err, (unsigned long long)pseg_start);
 	goto out;
+}
+
+int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilfs_deduplication_block *out)
+{
+	struct super_block *sb = nilfs->ns_sb;
+	struct buffer_head *bh = NULL;
+	struct nilfs_segment_summary *sum = NULL;
+	struct nilfs_recovery_block *last_rb = NULL;
+	struct nilfs_recovery_block *rb = NULL;
+	struct nilfs_recovery_block *n = NULL;
+	const sector_t pseg_start = nilfs->ns_last_pseg;
+	const __u64 segnum = nilfs_get_segnum_of_block(nilfs, pseg_start);
+	sector_t seg_start = 0;
+	sector_t seg_end = 0;
+	int ret = 0;
+	LIST_HEAD(dsync_blocks);
+
+	nilfs_get_segment_range(nilfs, segnum, &seg_start, &seg_end);
+
+	bh = nilfs_read_log_header(nilfs, pseg_start, &sum);
+	if (!bh) {
+		ret = -EIO;
+		goto failed;
+	}
+
+	ret = nilfs_scan_dsync_log(nilfs, pseg_start, sum, &dsync_blocks);
+
+	last_rb = list_last_entry(&dsync_blocks, struct nilfs_recovery_block, list);
+	out->ino = last_rb->ino;
+	out->blocknr = last_rb->blocknr;
+	out->vblocknr = last_rb->vblocknr;
+	out->offset = last_rb->blkoff;
+	out->cno = -1; // don't care
+
+	list_for_each_entry_safe(rb, n, &dsync_blocks, list) {
+		nilfs_info(sb, "entry: ino = %ld, blocknr = %ld, vblocknr = %ld, blockoff = %ld", rb->ino, rb->blocknr, rb->vblocknr, rb->blkoff);
+	}
+
+failed:
+	return ret;	
 }
 
 static void nilfs_finish_roll_forward(struct the_nilfs *nilfs,
