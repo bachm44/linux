@@ -7,7 +7,6 @@
  * Written by Koji Sato.
  */
 
-#include "linux/nilfs2_api.h"
 #include <linux/fs.h>
 #include <linux/wait.h>
 #include <linux/slab.h>

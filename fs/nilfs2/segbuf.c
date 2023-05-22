@@ -8,7 +8,6 @@
  *
  */
 
-#include "linux/completion.h"
 #include <linux/buffer_head.h>
 #include <linux/writeback.h>
 #include <linux/crc32.h>

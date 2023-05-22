@@ -7,7 +7,6 @@
  * Written by Ryusuke Konishi.
  */
 
-#include <linux/nilfs2_api.h>
 #include <linux/buffer_head.h>
 #include <linux/blkdev.h>
 #include <linux/swap.h>
@@ -17,7 +16,6 @@
 #include "segment.h"
 #include "sufile.h"
 #include "page.h"
-#include "dedup.h"
 #include "segbuf.h"
 
 /*
@@ -686,144 +684,6 @@ static int nilfs_do_roll_forward(struct the_nilfs *nilfs,
 		  "error %d roll-forwarding partial segment at blocknr = %llu",
 		  err, (unsigned long long)pseg_start);
 	goto out;
-}
-
-/**
- * nilfs_scan_dsync_log - get block information of a log written for data sync
- * @nilfs: nilfs object
- * @start_blocknr: start block number of the log
- * @sum: log summary information
- * @head: list head to add nilfs_recovery_block struct
- */
-static int nilfs_scan_psegment_blocks(struct the_nilfs *nilfs, sector_t start_blocknr,
-				struct nilfs_segment_summary *sum,
-				struct list_head *head)
-{
-	struct buffer_head *bh;
-	unsigned int offset;
-	u32 nfinfo, sumbytes;
-	sector_t blocknr;
-	ino_t ino;
-	int err = -EIO;
-
-	nfinfo = le32_to_cpu(sum->ss_nfinfo);
-	if (!nfinfo)
-		return 0;
-
-	sumbytes = le32_to_cpu(sum->ss_sumbytes);
-	blocknr = start_blocknr + DIV_ROUND_UP(sumbytes, nilfs->ns_blocksize);
-	bh = __bread(nilfs->ns_bdev, start_blocknr, nilfs->ns_blocksize);
-	if (unlikely(!bh))
-		goto out;
-
-	offset = le16_to_cpu(sum->ss_bytes);
-	for (;;) {
-		unsigned long nblocks, ndatablk, nnodeblk;
-		struct nilfs_finfo *finfo;
-
-		finfo = nilfs_read_summary_info(nilfs, &bh, &offset,
-						sizeof(*finfo));
-		if (unlikely(!finfo))
-			goto out;
-
-		ino = le64_to_cpu(finfo->fi_ino);
-		nblocks = le32_to_cpu(finfo->fi_nblocks);
-		ndatablk = le32_to_cpu(finfo->fi_ndatablk);
-		nnodeblk = nblocks - ndatablk;
-
-		while (ndatablk-- > 0) {
-			struct nilfs_recovery_block *rb;
-
-			if (ino == NILFS_DAT_INO) {
-				struct nilfs_binfo_dat *binfo;
-
-				binfo = nilfs_read_summary_info(nilfs, &bh, &offset,
-								sizeof(*binfo));
-				if (unlikely(!binfo))
-					goto out;
-
-				rb = kmalloc(sizeof(*rb), GFP_NOFS);
-				if (unlikely(!rb)) {
-					err = -ENOMEM;
-					goto out;
-				}
-				rb->ino = ino;
-				rb->blocknr = blocknr++;
-				rb->vblocknr = -1;
-				rb->blkoff = -1;
-				list_add_tail(&rb->list, head);
-			} else {
-				struct nilfs_binfo_v *binfo;
-				binfo = nilfs_read_summary_info(nilfs, &bh, &offset,
-								sizeof(*binfo));
-				if (unlikely(!binfo))
-					goto out;
-
-				rb = kmalloc(sizeof(*rb), GFP_NOFS);
-				if (unlikely(!rb)) {
-					err = -ENOMEM;
-					goto out;
-				}
-				rb->ino = ino;
-				rb->blocknr = blocknr++;
-				rb->vblocknr = le64_to_cpu(binfo->bi_vblocknr);
-				rb->blkoff = le64_to_cpu(binfo->bi_blkoff);
-				list_add_tail(&rb->list, head);
-			}
-		}
-		if (--nfinfo == 0)
-			break;
-		blocknr += nnodeblk; /* always 0 for data sync logs */
-		nilfs_skip_summary_info(nilfs, &bh, &offset, sizeof(__le64),
-					nnodeblk);
-		if (unlikely(!bh))
-			goto out;
-	}
-	err = 0;
-out:
-	brelse(bh); /* brelse(NULL) is just ignored */
-	return err;
-}
-
-int nilfs_get_last_block_in_latest_psegment(struct the_nilfs *nilfs, struct nilfs_deduplication_block *out)
-{
-	struct super_block *sb = nilfs->ns_sb;
-	struct buffer_head *bh = NULL;
-	struct nilfs_segment_summary *sum = NULL;
-	struct nilfs_recovery_block *last_rb = NULL;
-	struct nilfs_recovery_block *rb = NULL;
-	struct nilfs_recovery_block *n = NULL;
-	const sector_t pseg_start = nilfs->ns_last_pseg;
-	const __u64 segnum = nilfs_get_segnum_of_block(nilfs, pseg_start);
-	sector_t seg_start = 0;
-	sector_t seg_end = 0;
-	int ret = 0;
-	LIST_HEAD(psegment_blocks);
-
-	nilfs_get_segment_range(nilfs, segnum, &seg_start, &seg_end);
-
-	bh = nilfs_read_log_header(nilfs, pseg_start, &sum);
-	if (!bh) {
-		ret = -EIO;
-		goto failed;
-	}
-
-	ret = nilfs_scan_psegment_blocks(nilfs, pseg_start, sum, &psegment_blocks);
-
-	last_rb = list_last_entry(&psegment_blocks, struct nilfs_recovery_block, list);
-	out->ino = last_rb->ino;
-	out->blocknr = last_rb->blocknr;
-	out->vblocknr = last_rb->vblocknr;
-	out->offset = last_rb->blkoff;
-	out->cno = -1; // not needed
-
-	nilfs_debug(sb, "entries in segnum = %ld", segnum);
-	list_for_each_entry_safe(rb, n, &psegment_blocks, list) {
-		nilfs_debug(sb, "entry: ino = %ld, blocknr = %ld, vblocknr = %ld, blockoff = %ld", rb->ino, rb->blocknr, rb->vblocknr, rb->blkoff);
-	}
-
-failed:
-	return ret;
 }
 
 static void nilfs_finish_roll_forward(struct the_nilfs *nilfs,
