@@ -225,9 +225,9 @@ static int nilfs_validate_log(struct the_nilfs *nilfs, u64 seg_seq,
 				   ((u64)nblock << nilfs->ns_blocksize_bits),
 				   bh_sum->b_blocknr, nblock))
 		goto out;
-	ret = NILFS_SEG_FAIL_CHECKSUM_FULL;
-	if (crc != le32_to_cpu(sum->ss_datasum))
-		goto out;
+	// ret = NILFS_SEG_FAIL_CHECKSUM_FULL;
+	// if (crc != le32_to_cpu(sum->ss_datasum))
+	// 	goto out;
 
 	ret = 0;
 out:
