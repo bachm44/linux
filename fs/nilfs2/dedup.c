@@ -12,35 +12,6 @@
 #include <linux/vmalloc.h>
 
 static void
-nilfs_dedup_read_block(const struct the_nilfs *nilfs,
-		       struct inode *just_some_random_inode,
-		       const struct nilfs_deduplication_block *block)
-{
-	struct nilfs_root *root = NILFS_I(just_some_random_inode)->i_root;
-	struct inode *inode = nilfs_iget(nilfs->ns_sb, root, block->ino);
-	struct buffer_head *bh =
-		nilfs_grab_buffer(inode, inode->i_mapping, block->offset, 0);
-	const blk_opf_t opf = REQ_SYNC | REQ_OP_READ;
-	sector_t blocknr;
-	struct super_block *sb = nilfs->ns_sb;
-
-	BUG_ON(nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr));
-
-	map_bh(bh, nilfs->ns_sb, (sector_t)blocknr);
-	bh->b_end_io = end_buffer_read_sync;
-	get_bh(bh);
-	lock_buffer(bh);
-	submit_bh(opf, bh);
-
-	nilfs_debug(sb, "CONTENT: '%s'", bh->b_data);
-
-	unlock_page(bh->b_page);
-	put_page(bh->b_page);
-	brelse(bh);
-	iput(inode);
-}
-
-static void
 nilfs_dedup_print_block_info(const struct nilfs_deduplication_block *block,
 			     const struct the_nilfs *nilfs, struct inode *i)
 {
@@ -54,8 +25,6 @@ nilfs_dedup_print_block_info(const struct nilfs_deduplication_block *block,
 		"BLOCK: ino=%ld, cno=%ld, vblocknr=%ld, blocknr=%ld, offset=%ld, dat_translated=%ld, dat_ret=%d",
 		block->ino, block->cno, block->vblocknr, block->blocknr,
 		block->offset, blocknr, ret);
-
-	nilfs_dedup_read_block(nilfs, i, block);
 }
 
 static bool
