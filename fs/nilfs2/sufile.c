@@ -864,9 +864,11 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 			si->sui_nblocks = le32_to_cpu(su->su_nblocks);
 			si->sui_flags = le32_to_cpu(su->su_flags) &
 				~BIT(NILFS_SEGMENT_USAGE_ACTIVE);
-			if (nilfs_segment_is_active(nilfs, segnum + j))
-				si->sui_flags |=
-					BIT(NILFS_SEGMENT_USAGE_ACTIVE);
+			// Temporary workaround for nilfs_cleanerd which
+			// needs non active segments
+			// if (nilfs_segment_is_active(nilfs, segnum + j))
+			// 	si->sui_flags |=
+			// 		BIT(NILFS_SEGMENT_USAGE_ACTIVE);
 		}
 		kunmap_atomic(kaddr);
 		brelse(su_bh);

@@ -9,6 +9,7 @@
  */
 
 #include "alloc.h"
+#include "bmap.h"
 #include "dat.h"
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
@@ -2917,6 +2918,9 @@ static int nilfs_segctor_write_block(sector_t vblocknr, struct the_nilfs *nilfs)
 	struct buffer_head *bh = NULL;
 	struct inode *dat = nilfs->ns_dat;
 	int ret = 0;
+	sector_t blocknr;
+
+	BUG_ON(nilfs_dat_translate(dat, vblocknr, &blocknr) < 0);
 
 	ret = nilfs_palloc_get_entry_block(dat, vblocknr, 0, &bh);
 	if (ret < 0)
@@ -2926,6 +2930,98 @@ static int nilfs_segctor_write_block(sector_t vblocknr, struct the_nilfs *nilfs)
 
 out:
 	brelse(bh);
+	return ret;
+}
+
+static sector_t nilfs_dat_last_key(struct inode *dat, sector_t min_vblocknr)
+{
+	struct buffer_head *bh = NULL;
+
+	min_vblocknr += 100000; // FIXME
+	while(nilfs_palloc_get_entry_block(dat, min_vblocknr, false, &bh) >= 0)
+		++min_vblocknr;
+
+	// nilfs_bmap_last_key(NILFS_I(dat)->i_bmap, &min_vblocknr);
+
+	return min_vblocknr;
+}
+
+static int nilfs_dat_make(struct inode *dat, sector_t blocknr, sector_t min_vblocknr, sector_t *vblocknr)
+{
+	__u64 out;
+	__u64 last_key = nilfs_dat_last_key(dat, min_vblocknr);
+	struct buffer_head *bh = NULL;
+	int ret = 0;
+	void *kaddr = NULL;
+	struct super_block *sb = dat->i_sb;
+	struct the_nilfs *nilfs = sb->s_fs_info;
+	struct nilfs_dat_entry *entry = NULL;
+
+	nilfs_info(sb, "min vblocknr = %ld, last_key = %ld", min_vblocknr, last_key);
+	BUG_ON(nilfs_dat_translate(dat, last_key, &out) >= 0);
+
+	ret = nilfs_palloc_get_entry_block(dat, last_key, true, &bh);
+	if (ret < 0)
+		return ret;
+
+	kaddr = kmap_atomic(bh->b_page);
+	entry = nilfs_palloc_block_get_entry(dat, last_key, bh, kaddr);
+	entry->de_blocknr = cpu_to_le64(blocknr);
+	entry->de_end = 0;
+	entry->de_start = 0;
+	entry->de_reference_count = 0;
+	entry->de_state = 0;
+	kunmap_atomic(kaddr);
+
+	mark_buffer_dirty(bh);
+	nilfs_mdt_mark_dirty(dat);
+
+	struct nilfs_palloc_req req = {
+		.pr_entry_nr = last_key, .pr_entry_bh = bh
+	};
+	ret = nilfs_dat_prepare_alloc(dat, &req);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to prepare dat alloc: ret %d", ret);
+		return ret;
+	}
+
+	// nilfs_dat_commit_alloc(dat, &req);
+
+	brelse(bh);
+
+	ret = nilfs_segctor_write_block(last_key, nilfs);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d", last_key, ret);
+		return ret;
+	}
+
+	BUG_ON(nilfs_dat_translate(dat, last_key, &out) < 0);
+	BUG_ON(out != blocknr);
+
+	*vblocknr = last_key;
+	return ret;
+}
+
+static int nilfs_free_blocknr(struct inode *dat, sector_t blocknr, sector_t min_vblocknr)
+{
+	sector_t vblocknr;
+	struct super_block *sb = dat->i_sb;
+	int ret = 0;
+	sector_t vblocknrs[1];
+
+	ret = nilfs_dat_make(dat, blocknr, min_vblocknr, &vblocknr);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to create new DAT object: ret = %d", ret);
+		return ret;
+	}
+
+	vblocknrs[0] = vblocknr;
+	ret = nilfs_dat_freev(dat, vblocknrs, 1);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to free vblocknr %ld: ret = %d", vblocknr, ret);
+		return ret;
+	}
+
 	return ret;
 }
 
@@ -2943,10 +3039,21 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	nilfs_dat_translate(dat, vblocknr, &free_blocknr);
+	ret = nilfs_dat_translate(dat, vblocknr, &free_blocknr);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to translate vblocknr = %ld, ret = %d", vblocknr, ret);
+		goto out;
+	}
+
+	ret = nilfs_free_blocknr(dat, free_blocknr, vblocknr);
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to free blocknr = %ld, ret = %d", free_blocknr, ret);
+		goto out;
+	}
+
 
 	ret = nilfs_dat_move(dat, vblocknr, blocknr);
-	if(ret < 0) {
+	if (ret < 0) {
 		nilfs_warn(sb, "nilfs_dat_move failed");
 		nilfs_segctor_abort_construction(sci, nilfs, ret);
 		nilfs_mdt_clear_dirty(dat);
@@ -2954,9 +3061,11 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	}
 
 	ret = nilfs_segctor_write_block(vblocknr, nilfs);
-	if (ret < 0)
+	if (ret < 0) {
+		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d", vblocknr, ret);
 		goto out;
-
+	}
+	
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;

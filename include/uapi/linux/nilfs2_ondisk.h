@@ -463,18 +463,22 @@ struct nilfs_palloc_group_desc {
 	__le32 pg_nfrees;
 };
 
+#define NILFS_DAT_STATE_STANDARD 0
+#define NILFS_DAT_STATE_SOURCE 1
+#define NILFS_DAT_STATE_DESTINATION 2
+
 /**
  * struct nilfs_dat_entry - disk address translation entry
  * @de_blocknr: block number
  * @de_start: start checkpoint number
  * @de_end: end checkpoint number
- * @de_rsv: reserved for future use
  */
 struct nilfs_dat_entry {
 	__le64 de_blocknr;
 	__le64 de_start;
 	__le64 de_end;
-	__le64 de_rsv;
+	__le32 de_state;
+	__le32 de_reference_count;
 };
 
 #define NILFS_MIN_DAT_ENTRY_SIZE	32
