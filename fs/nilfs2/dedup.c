@@ -20,7 +20,7 @@ nilfs_dedup_print_block_info(const struct nilfs_deduplication_block *block,
 
 	int ret = nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
 
-	nilfs_info(
+	nilfs_debug(
 		sb,
 		"BLOCK: ino=%ld, cno=%ld, vblocknr=%ld, blocknr=%ld, offset=%ld, dat_translated=%ld, dat_ret=%d",
 		block->ino, block->cno, block->vblocknr, block->blocknr,
@@ -37,7 +37,7 @@ nilfs_dedup_is_block_in_dat(struct the_nilfs *nilfs,
 	const int ret =
 		nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
 	if (ret < 0) {
-		nilfs_info(
+		nilfs_warn(
 			sb,
 			"Block with vblocknr = %ld not found in DAT, skipping",
 			block->vblocknr);
@@ -60,7 +60,7 @@ int nilfs_dedup(struct inode *inode,
 	int ret = 0;
 	uint64_t deduplicated = 0;
 
-	nilfs_debug(sb, "Starting deduplication");
+	nilfs_info(sb, "Starting deduplication of %d blocks", blocks_count);
 
 	BUG_ON(!blocks);
 	src = &blocks[0];
