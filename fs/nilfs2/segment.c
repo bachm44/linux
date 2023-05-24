@@ -8,8 +8,6 @@
  *
  */
 
-#include "alloc.h"
-#include "bmap.h"
 #include "dat.h"
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
@@ -2831,106 +2829,101 @@ void nilfs_detach_log_writer(struct super_block *sb)
 	nilfs_dispose_list(nilfs, &garbage_list, 1);
 }
 
-static void nilfs_segctor_prepare_write_bh(struct buffer_head *bh)
+static int nilfs_segctor_move_block(struct nilfs_sc_info *sci)
 {
-	struct page *bd_page = NULL, *fs_page = NULL;
+	struct the_nilfs *nilfs = sci->sc_super->s_fs_info;
+	const int mode = SC_FLUSH_DAT;
+	int err;
 
-// TODO check which execution path is taken and which ifs are needed
-	if (bh->b_page != bd_page) {
-		if (bd_page) {
-			lock_page(bd_page);
-			clear_page_dirty_for_io(bd_page);
-			set_page_writeback(bd_page);
-			unlock_page(bd_page);
-		}
-		bd_page = bh->b_page;
-	}
+	nilfs_sc_cstage_set(sci, NILFS_ST_INIT);
+	sci->sc_cno = nilfs->ns_cno;
 
-	set_buffer_async_write(bh);
-
-	if (bh->b_page != fs_page) {
-		nilfs_begin_page_io(fs_page);
-		fs_page = bh->b_page;
-	}
-
-	if (bd_page) {
-		lock_page(bd_page);
-		clear_page_dirty_for_io(bd_page);
-		set_page_writeback(bd_page);
-		unlock_page(bd_page);
-	}
-	nilfs_begin_page_io(fs_page);
-}
-
-static void nilfs_segctor_complete_write_bh(struct buffer_head *bh, struct the_nilfs* nilfs)
-{
-	struct page *bd_page = NULL, *fs_page = NULL;
-
-	/*
-		* We assume that the buffers which belong to the same page
-		* continue over the buffer list.
-		* Under this assumption, the last BHs of pages is
-		* identifiable by the discontinuity of bh->b_page
-		* (page != fs_page).
-		*
-		* For B-tree node blocks, however, this assumption is not
-		* guaranteed.  The cleanup code of B-tree node pages needs
-		* special care.
-		*/
-	const unsigned long set_bits = BIT(BH_Uptodate);
-	const unsigned long clear_bits =
-		(BIT(BH_Dirty) | BIT(BH_Async_Write) |
-			BIT(BH_Delay) | BIT(BH_NILFS_Volatile) |
-			BIT(BH_NILFS_Redirected));
-
-	set_mask_bits(&bh->b_state, clear_bits, set_bits);
-	if (bh->b_page != fs_page) {
-		nilfs_end_page_io(fs_page, 0);
-		fs_page = bh->b_page;
-	}
-
-	/*
-	 * Since pages may continue over multiple segment buffers,
-	 * end of the last page must be checked outside of the loop.
-	 */
-	if (bd_page)
-		end_page_writeback(bd_page);
-
-	nilfs_end_page_io(fs_page, 0);
-}
-
-int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs)
-{
-	int ret = 0;
-
-	nilfs_segctor_prepare_write_bh(bh);
-	ret = nilfs_segbuf_write_bh(bh, nilfs);
-
-	if (ret < 0)
-		return ret;
-
-	nilfs_segctor_complete_write_bh(bh, nilfs);
-	return ret;
-}
-
-static int nilfs_segctor_write_block(sector_t vblocknr, struct the_nilfs *nilfs)
-{
-	struct buffer_head *bh = NULL;
-	struct inode *dat = nilfs->ns_dat;
-	int ret = 0;
-	sector_t blocknr;
-
-	BUG_ON(nilfs_dat_translate(dat, vblocknr, &blocknr) < 0);
-
-	ret = nilfs_palloc_get_entry_block(dat, vblocknr, 0, &bh);
-	if (ret < 0)
+	err = nilfs_segctor_collect_dirty_files(sci, nilfs);
+	if (unlikely(err))
 		goto out;
 
-	ret = nilfs_segctor_write_bh(bh, nilfs);
+	if (nilfs_test_metadata_dirty(nilfs, sci->sc_root))
+		set_bit(NILFS_SC_DIRTY, &sci->sc_flags);
+
+	if (nilfs_segctor_clean(sci))
+		goto out;
+
+	do {
+		sci->sc_stage.flags &= ~NILFS_CF_HISTORY_MASK;
+
+		err = nilfs_segctor_begin_construction(sci, nilfs);
+		if (unlikely(err))
+			goto out;
+
+		/* Update time stamp */
+		sci->sc_seg_ctime = ktime_get_real_seconds();
+
+		err = nilfs_segctor_collect(sci, nilfs, mode);
+		if (unlikely(err))
+			goto failed;
+
+		/* Avoid empty segment */
+		if (nilfs_sc_cstage_get(sci) == NILFS_ST_DONE &&
+		    nilfs_segbuf_empty(sci->sc_curseg)) {
+			nilfs_segctor_abort_construction(sci, nilfs, 1);
+			goto out;
+		}
+
+		err = nilfs_segctor_assign(sci, mode);
+		if (unlikely(err))
+			goto failed;
+
+		if (sci->sc_stage.flags & NILFS_CF_IFILE_STARTED)
+			nilfs_segctor_fill_in_file_bmap(sci);
+
+		if (mode == SC_LSEG_SR &&
+		    nilfs_sc_cstage_get(sci) >= NILFS_ST_CPFILE) {
+			err = nilfs_segctor_fill_in_checkpoint(sci);
+			if (unlikely(err))
+				goto failed_to_write;
+
+			nilfs_segctor_fill_in_super_root(sci, nilfs);
+		}
+		nilfs_segctor_update_segusage(sci, nilfs->ns_sufile);
+
+		/* Write partial segments */
+		nilfs_segctor_prepare_write(sci);
+
+		nilfs_add_checksums_on_logs(&sci->sc_segbufs,
+					    nilfs->ns_crc_seed);
+
+		err = nilfs_segctor_write(sci, nilfs);
+		if (unlikely(err))
+			goto failed_to_write;
+
+		if (nilfs_sc_cstage_get(sci) == NILFS_ST_DONE ||
+		    nilfs->ns_blocksize_bits != PAGE_SHIFT) {
+			/*
+			 * At this point, we avoid double buffering
+			 * for blocksize < pagesize because page dirty
+			 * flag is turned off during write and dirty
+			 * buffers are not properly collected for
+			 * pages crossing over segments.
+			 */
+			err = nilfs_segctor_wait(sci);
+			if (err)
+				goto failed_to_write;
+		}
+	} while (nilfs_sc_cstage_get(sci) != NILFS_ST_DONE);
 
 out:
-	brelse(bh);
-	return ret;
+	nilfs_segctor_drop_written_files(sci, nilfs);
+	return err;
+
+failed_to_write:
+	if (sci->sc_stage.flags & NILFS_CF_IFILE_STARTED)
+		nilfs_redirty_inodes(&sci->sc_dirty_files);
+
+failed:
+	if (nilfs_doing_gc())
+		nilfs_redirty_inodes(&sci->sc_gc_inodes);
+	nilfs_segctor_abort_construction(sci, nilfs, err);
+	goto out;
 }
 
 static sector_t nilfs_dat_last_key(struct inode *dat, sector_t min_vblocknr)
@@ -2940,8 +2933,6 @@ static sector_t nilfs_dat_last_key(struct inode *dat, sector_t min_vblocknr)
 	min_vblocknr += 100000; // FIXME
 	while(nilfs_palloc_get_entry_block(dat, min_vblocknr, false, &bh) >= 0)
 		++min_vblocknr;
-
-	// nilfs_bmap_last_key(NILFS_I(dat)->i_bmap, &min_vblocknr);
 
 	return min_vblocknr;
 }
@@ -2954,7 +2945,6 @@ static int nilfs_dat_make(struct inode *dat, sector_t blocknr, sector_t min_vblo
 	int ret = 0;
 	void *kaddr = NULL;
 	struct super_block *sb = dat->i_sb;
-	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_dat_entry *entry = NULL;
 
 	nilfs_debug(sb, "searching for last vblocknr: min vblocknr = %ld, last_key = %ld", min_vblocknr, last_key);
@@ -2976,49 +2966,30 @@ static int nilfs_dat_make(struct inode *dat, sector_t blocknr, sector_t min_vblo
 	mark_buffer_dirty(bh);
 	nilfs_mdt_mark_dirty(dat);
 
-	struct nilfs_palloc_req req = {
-		.pr_entry_nr = last_key, .pr_entry_bh = bh
-	};
-	ret = nilfs_dat_prepare_alloc(dat, &req);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to prepare dat alloc: ret %d", ret);
-		return ret;
-	}
-
-	// nilfs_dat_commit_alloc(dat, &req);
-
-	brelse(bh);
-
-	ret = nilfs_segctor_write_block(last_key, nilfs);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d", last_key, ret);
-		return ret;
-	}
-
-	BUG_ON(nilfs_dat_translate(dat, last_key, &out) < 0);
-	BUG_ON(out != blocknr);
-
 	*vblocknr = last_key;
 	return ret;
 }
 
-static int nilfs_free_blocknr(struct inode *dat, sector_t blocknr, sector_t min_vblocknr)
+static int nilfs_free_blocknr(struct inode *dat, sector_t vblocknr)
 {
-	sector_t vblocknr;
 	struct super_block *sb = dat->i_sb;
 	int ret = 0;
 	sector_t vblocknrs[1];
+	sector_t blocknr;
+	sector_t dummy_vblocknr;
 
-	ret = nilfs_dat_make(dat, blocknr, min_vblocknr, &vblocknr);
+	BUG_ON((nilfs_dat_translate(dat, vblocknr, &blocknr)) < 0);
+
+	ret = nilfs_dat_make(dat, blocknr, vblocknr, &dummy_vblocknr);
 	if (ret < 0) {
 		nilfs_warn(sb, "Failed to create new DAT object: ret = %d", ret);
 		return ret;
 	}
 
-	vblocknrs[0] = vblocknr;
+	vblocknrs[0] = dummy_vblocknr;
 	ret = nilfs_dat_freev(dat, vblocknrs, 1);
 	if (ret < 0) {
-		nilfs_warn(sb, "Failed to free vblocknr %ld: ret = %d", vblocknr, ret);
+		nilfs_warn(sb, "Failed to free vblocknr %ld: ret = %d", dummy_vblocknr, ret);
 		return ret;
 	}
 
@@ -3032,40 +3003,30 @@ int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t bl
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
-	sector_t free_blocknr;
 	int ret = 0;
+
+	BUG_ON(!sci);
 
 	// TODO
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	ret = nilfs_dat_translate(dat, vblocknr, &free_blocknr);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to translate vblocknr = %ld, ret = %d", vblocknr, ret);
+	if ((ret = nilfs_free_blocknr(dat, vblocknr)) < 0) {
 		goto out;
 	}
 
-	ret = nilfs_free_blocknr(dat, free_blocknr, vblocknr);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to free blocknr = %ld, ret = %d", free_blocknr, ret);
-		goto out;
-	}
-
-
-	ret = nilfs_dat_move(dat, vblocknr, blocknr);
-	if (ret < 0) {
+	if((ret = nilfs_dat_move(dat, vblocknr, blocknr)) < 0) {
 		nilfs_warn(sb, "nilfs_dat_move failed");
 		nilfs_segctor_abort_construction(sci, nilfs, ret);
 		nilfs_mdt_clear_dirty(dat);
 		goto out;
 	}
 
-	ret = nilfs_segctor_write_block(vblocknr, nilfs);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d", vblocknr, ret);
-		goto out;
-	}
-	
+// FIXME TODO
+// Check if we can execute this only once not for each block.
+// This may reduce number of created segments
+	ret = nilfs_segctor_move_block(sci);
+
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;
