@@ -2957,7 +2957,7 @@ static int nilfs_dat_make(struct inode *dat, sector_t blocknr, sector_t min_vblo
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_dat_entry *entry = NULL;
 
-	nilfs_info(sb, "min vblocknr = %ld, last_key = %ld", min_vblocknr, last_key);
+	nilfs_debug(sb, "searching for last vblocknr: min vblocknr = %ld, last_key = %ld", min_vblocknr, last_key);
 	BUG_ON(nilfs_dat_translate(dat, last_key, &out) >= 0);
 
 	ret = nilfs_palloc_get_entry_block(dat, last_key, true, &bh);
