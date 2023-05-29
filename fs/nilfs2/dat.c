@@ -146,6 +146,7 @@ static int nilfs_dat_decrement_ref(struct inode *dat, sector_t vblocknr)
 
 		if (nilfs_dat_freev(dat, vblocknrs, 1) < 0) {
 			nilfs_warn(dat->i_sb, "failed to free src inode");
+			kunmap_atomic(kaddr);
 			return -ENOMEM;
 		}
 	}
@@ -515,6 +516,7 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 
 	kaddr = kmap_atomic(entry_bh->b_page);
 	entry = nilfs_palloc_block_get_entry(dat, vblocknr, entry_bh, kaddr);
+	kunmap_atomic(kaddr);
 
 	if (entry->de_state == NILFS_DAT_STATE_DESTINATION)
 		nilfs_dat_translate(dat, entry->de_blocknr, &blocknr);
@@ -528,7 +530,6 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 	*blocknrp = blocknr;
 
  out:
-	kunmap_atomic(kaddr);
 	brelse(entry_bh);
 	return ret;
 }
@@ -568,7 +569,6 @@ ssize_t nilfs_dat_get_vinfo(struct inode *dat, void *buf, unsigned int visz,
 			}
 			else {
 				vinfo->vi_blocknr = 0;
-				vinfo->vi_vblocknr = 0;
 			}
 		}
 		kunmap_atomic(kaddr);

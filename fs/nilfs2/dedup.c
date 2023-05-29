@@ -48,103 +48,6 @@ nilfs_dedup_is_block_in_dat(struct the_nilfs *nilfs,
 	return true;
 }
 
-static sector_t nilfs_dat_last_key(struct inode *dat, sector_t min_vblocknr)
-{
-	struct buffer_head *bh = NULL;
-
-	min_vblocknr += 100000; // FIXME
-	while (nilfs_palloc_get_entry_block(dat, min_vblocknr, false, &bh) >= 0)
-		++min_vblocknr;
-
-	// nilfs_bmap_last_key(NILFS_I(dat)->i_bmap, &min_vblocknr);
-
-	return min_vblocknr;
-}
-
-static int nilfs_dat_make(struct inode *dat, sector_t blocknr,
-			  sector_t min_vblocknr, sector_t *vblocknr)
-{
-	__u64 out;
-	__u64 last_key = nilfs_dat_last_key(dat, min_vblocknr);
-	struct buffer_head *bh = NULL;
-	int ret = 0;
-	void *kaddr = NULL;
-	struct super_block *sb = dat->i_sb;
-	struct the_nilfs *nilfs = sb->s_fs_info;
-	struct nilfs_dat_entry *entry = NULL;
-
-	nilfs_debug(
-		sb,
-		"searching for last vblocknr: min vblocknr = %ld, last_key = %ld",
-		min_vblocknr, last_key);
-	BUG_ON(nilfs_dat_translate(dat, last_key, &out) >= 0);
-
-	ret = nilfs_palloc_get_entry_block(dat, last_key, true, &bh);
-	if (ret < 0)
-		return ret;
-
-	kaddr = kmap_atomic(bh->b_page);
-	entry = nilfs_palloc_block_get_entry(dat, last_key, bh, kaddr);
-	entry->de_blocknr = cpu_to_le64(blocknr);
-	entry->de_end = 0;
-	entry->de_start = 0;
-	entry->de_reference_count = 1;
-	entry->de_state = NILFS_DAT_STATE_STANDARD;
-	kunmap_atomic(kaddr);
-
-	mark_buffer_dirty(bh);
-	nilfs_mdt_mark_dirty(dat);
-
-	struct nilfs_palloc_req req = { .pr_entry_nr = last_key,
-					.pr_entry_bh = bh };
-	ret = nilfs_dat_prepare_alloc(dat, &req);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to prepare dat alloc: ret %d", ret);
-		return ret;
-	}
-
-	brelse(bh);
-
-	ret = nilfs_segctor_write_block(last_key, nilfs);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d",
-			   last_key, ret);
-		return ret;
-	}
-
-	BUG_ON(nilfs_dat_translate(dat, last_key, &out) < 0);
-	BUG_ON(out != blocknr);
-
-	*vblocknr = last_key;
-	return ret;
-}
-
-static int nilfs_free_blocknr(struct inode *dat, sector_t dst_vblocknr,
-			      sector_t free_blocknr)
-{
-	sector_t vblocknr;
-	struct super_block *sb = dat->i_sb;
-	int ret = 0;
-	sector_t vblocknrs[1];
-
-	ret = nilfs_dat_make(dat, free_blocknr, dst_vblocknr, &vblocknr);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to create new DAT object: ret = %d",
-			   ret);
-		return ret;
-	}
-
-	// vblocknrs[0] = vblocknr;
-	// ret = nilfs_dat_freev(dat, vblocknrs, 1);
-	// if (ret < 0) {
-	// 	nilfs_warn(sb, "Failed to free vblocknr %ld: ret = %d",
-	// 		   vblocknr, ret);
-	// 	return ret;
-	// }
-
-	return ret;
-}
-
 static int nilfs_dat_dedup_make_src(struct inode *dat, sector_t vblocknr)
 {
 	struct buffer_head *entry_bh;
@@ -187,13 +90,22 @@ static int nilfs_dat_dedup_make_src(struct inode *dat, sector_t vblocknr)
 	if (entry->de_state != NILFS_DAT_STATE_STANDARD) {
 		nilfs_warn(
 			dat->i_sb,
-			"attempting to free non standard inode type %d, skipping",
-			entry->de_state);
+			"src attempting to free non standard inode: vblocknr = %d, blocknr = %d, start = %d, end = %d, state = %d, ref = %d",
+			vblocknr, entry->de_blocknr, entry->de_start,
+			entry->de_end, entry->de_state,
+			entry->de_reference_count);
+		kunmap_atomic(kaddr);
+		brelse(entry_bh);
 		return -ENOENT;
 	}
 
 	entry->de_state = NILFS_DAT_STATE_SOURCE;
 	entry->de_reference_count = 2;
+	nilfs_info(
+		dat->i_sb,
+		"created src inode: vblocknr = %d, blocknr = %d, start = %d, end = %d, state = %d, ref = %d",
+		vblocknr, entry->de_blocknr, entry->de_start, entry->de_end,
+		entry->de_state, entry->de_reference_count);
 	kunmap_atomic(kaddr);
 
 	mark_buffer_dirty(entry_bh);
@@ -244,9 +156,37 @@ static int nilfs_dat_dedup_make_dst(struct inode *dat, sector_t src_vblocknr,
 		brelse(entry_bh);
 		return -EINVAL;
 	}
+	// no support for linked destination entries
+	if (entry->de_state != NILFS_DAT_STATE_STANDARD) {
+		nilfs_warn(
+			dat->i_sb,
+			"dst attempting to free non standard inode: vblocknr = %d, blocknr = %d, start = %d, end = %d, state = %d, ref = %d",
+			dst_vblocknr, entry->de_blocknr, entry->de_start,
+			entry->de_end, entry->de_state,
+			entry->de_reference_count);
+		kunmap_atomic(kaddr);
+		brelse(entry_bh);
+		return -ENOENT;
+	}
+
+	if (src_vblocknr == dst_vblocknr) {
+		nilfs_warn(
+			dat->i_sb,
+			"attempting to assign inode to itself: vblocknr = %d",
+			src_vblocknr);
+		kunmap_atomic(kaddr);
+		brelse(entry_bh);
+		return -ENOENT;
+	}
+
 	entry->de_state = NILFS_DAT_STATE_DESTINATION;
 	entry->de_reference_count = 1;
 	entry->de_blocknr = src_vblocknr;
+	nilfs_info(
+		dat->i_sb,
+		"created dst inode: vblocknr = %d, blocknr = %d, start = %d, end = %d, state = %d, ref = %d",
+		dst_vblocknr, entry->de_blocknr, entry->de_start, entry->de_end,
+		entry->de_state, entry->de_reference_count);
 	kunmap_atomic(kaddr);
 
 	mark_buffer_dirty(entry_bh);
@@ -289,14 +229,10 @@ static int nilfs_change_blocknr(struct nilfs_bmap *bmap,
 	ret = nilfs_dat_dedup(dat, src->vblocknr, dst->vblocknr);
 	if (ret < 0) {
 		nilfs_warn(sb, "nilfs_dat_dedup failed");
-		nilfs_segctor_abort_construction(sci, nilfs, ret);
+		// nilfs_segctor_abort_construction(sci, nilfs, ret);
 		nilfs_mdt_clear_dirty(dat);
 		goto out;
 	}
-
-	ret = nilfs_free_blocknr(dat, dst->vblocknr, free_blocknr);
-	if (ret < 0)
-		goto out;
 
 	ret = nilfs_segctor_move_block(sci);
 	if (ret < 0) {
@@ -308,59 +244,6 @@ static int nilfs_change_blocknr(struct nilfs_bmap *bmap,
 out:
 	nilfs_transaction_unlock(sb);
 	return ret;
-}
-
-static void nilfs_dedup_read_block(
-	const struct the_nilfs *nilfs, struct inode *just_some_random_inode,
-	const struct nilfs_deduplication_block *block, struct buffer_head **out)
-{
-	struct nilfs_root *root = NILFS_I(just_some_random_inode)->i_root;
-	struct inode *inode =
-		nilfs_iget_for_gc(nilfs->ns_sb, block->ino, block->cno);
-	struct buffer_head *bh =
-		nilfs_grab_buffer(inode, inode->i_mapping, block->offset, 0);
-	const blk_opf_t opf = REQ_SYNC | REQ_OP_READ;
-	sector_t blocknr;
-	struct super_block *sb = nilfs->ns_sb;
-
-	BUG_ON(nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr));
-
-	map_bh(bh, nilfs->ns_sb, (sector_t)blocknr);
-	bh->b_end_io = end_buffer_read_sync;
-	get_bh(bh);
-	lock_buffer(bh);
-	submit_bh(opf, bh);
-
-	*out = bh;
-
-	// unlock_page(bh->b_page);
-	// put_page(bh->b_page);
-	// brelse(bh);
-	iput(inode);
-}
-
-static void nilfs_dedup_validate(struct the_nilfs *nilfs, struct inode *inode,
-				 const struct nilfs_deduplication_block *src,
-				 const struct nilfs_deduplication_block *dst)
-{
-	struct buffer_head *src_bh = NULL;
-	struct buffer_head *dst_bh = NULL;
-
-	nilfs_dedup_read_block(nilfs, inode, src, &src_bh);
-	nilfs_dedup_read_block(nilfs, inode, src, &dst_bh);
-
-	if (memcmp(src_bh->b_data, dst_bh->b_data, nilfs->ns_blocksize) != 0) {
-		nilfs_warn(nilfs->ns_sb,
-			   "blocks are not the same: '%s' != '%s'",
-			   src_bh->b_data, dst_bh->b_data);
-	}
-
-	unlock_page(src_bh->b_page);
-	put_page(src_bh->b_page);
-	brelse(src_bh);
-	unlock_page(dst_bh->b_page);
-	put_page(dst_bh->b_page);
-	brelse(dst_bh);
 }
 
 int nilfs_dedup(struct inode *inode,
@@ -378,6 +261,12 @@ int nilfs_dedup(struct inode *inode,
 
 	nilfs_info(sb, "Starting deduplication of %d blocks", blocks_count);
 
+	if (blocks_count > 2) {
+		nilfs_warn(sb,
+			   "Multiple block dedup is not supported, skipping");
+		goto out;
+	}
+
 	BUG_ON(!blocks);
 	src = &blocks[0];
 	BUG_ON(!src);
@@ -388,10 +277,6 @@ int nilfs_dedup(struct inode *inode,
 	// TODO check if needed
 	if (nilfs_sb_need_update(nilfs))
 		set_nilfs_discontinued(nilfs);
-
-	// TODO
-	// check if we need to mark bdevs DAT blocks as dirty
-	// as in GC case
 
 	for (size_t i = 1; i < blocks_count; ++i) {
 		const struct nilfs_deduplication_block *dst = &blocks[i];
@@ -423,13 +308,10 @@ int nilfs_dedup(struct inode *inode,
 		nilfs_debug(sb, "After deduplication DST: ");
 		nilfs_dedup_print_block_info(dst, nilfs, inode);
 
-		// nilfs_dat_translate(dat, dst->vblocknr, &blocknr);
-		// BUG_ON(blocknr != src->blocknr);
-		// nilfs_dedup_validate(nilfs, inode, src, dst);
-
 		++deduplicated;
 	}
 
+out:
 	nilfs_info(sb, "Finished deduplication, deduplicated %ld blocks",
 		   deduplicated);
 
