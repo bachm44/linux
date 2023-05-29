@@ -235,7 +235,6 @@ extern int nilfs_clean_segments(struct super_block *, struct nilfs_argv *,
 				void **);
 int nilfs_attach_log_writer(struct super_block *sb, struct nilfs_root *root);
 void nilfs_detach_log_writer(struct super_block *sb);
-int nilfs_change_blocknr(struct nilfs_bmap *bmap, sector_t vblocknr, sector_t blocknr);
 
 /* recovery.c */
 extern int nilfs_read_super_root_block(struct the_nilfs *, sector_t,
@@ -246,5 +245,11 @@ int nilfs_salvage_orphan_logs(struct the_nilfs *nilfs, struct super_block *sb,
 			      struct nilfs_recovery_info *ri);
 extern void nilfs_dispose_segment_list(struct list_head *);
 
-int nilfs_segctor_write_bh(struct buffer_head *bh, struct the_nilfs *nilfs);
+void nilfs_transaction_lock(struct super_block *sb,
+			    struct nilfs_transaction_info *ti, int gcflag);
+void nilfs_transaction_unlock(struct super_block *sb);
+int nilfs_segctor_write_block(sector_t vblocknr, struct the_nilfs *nilfs);
+void nilfs_segctor_abort_construction(struct nilfs_sc_info *sci,
+					     struct the_nilfs *nilfs, int err);
+int nilfs_segctor_move_block(struct nilfs_sc_info *sci);
 #endif /* _NILFS_SEGMENT_H */
