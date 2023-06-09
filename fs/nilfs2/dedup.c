@@ -48,103 +48,6 @@ nilfs_dedup_is_block_in_dat(struct the_nilfs *nilfs,
 	return true;
 }
 
-static sector_t nilfs_dat_last_key(struct inode *dat, sector_t min_vblocknr)
-{
-	struct buffer_head *bh = NULL;
-
-	min_vblocknr += 100000; // FIXME
-	while (nilfs_palloc_get_entry_block(dat, min_vblocknr, false, &bh) >= 0)
-		++min_vblocknr;
-
-	// nilfs_bmap_last_key(NILFS_I(dat)->i_bmap, &min_vblocknr);
-
-	return min_vblocknr;
-}
-
-static int nilfs_dat_make(struct inode *dat, sector_t blocknr,
-			  sector_t min_vblocknr, sector_t *vblocknr)
-{
-	__u64 out;
-	__u64 last_key = nilfs_dat_last_key(dat, min_vblocknr);
-	struct buffer_head *bh = NULL;
-	int ret = 0;
-	void *kaddr = NULL;
-	struct super_block *sb = dat->i_sb;
-	struct the_nilfs *nilfs = sb->s_fs_info;
-	struct nilfs_dat_entry *entry = NULL;
-
-	nilfs_debug(
-		sb,
-		"searching for last vblocknr: min vblocknr = %ld, last_key = %ld",
-		min_vblocknr, last_key);
-	BUG_ON(nilfs_dat_translate(dat, last_key, &out) >= 0);
-
-	ret = nilfs_palloc_get_entry_block(dat, last_key, true, &bh);
-	if (ret < 0)
-		return ret;
-
-	kaddr = kmap_atomic(bh->b_page);
-	entry = nilfs_palloc_block_get_entry(dat, last_key, bh, kaddr);
-	entry->de_blocknr = cpu_to_le64(blocknr);
-	entry->de_end = 0;
-	entry->de_start = 0;
-	entry->de_reference_count = 1;
-	entry->de_state = NILFS_DAT_STATE_STANDARD;
-	kunmap_atomic(kaddr);
-
-	mark_buffer_dirty(bh);
-	nilfs_mdt_mark_dirty(dat);
-
-	struct nilfs_palloc_req req = { .pr_entry_nr = last_key,
-					.pr_entry_bh = bh };
-	ret = nilfs_dat_prepare_alloc(dat, &req);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to prepare dat alloc: ret %d", ret);
-		return ret;
-	}
-
-	brelse(bh);
-
-	ret = nilfs_segctor_write_block(last_key, nilfs);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to write vblocknr = %ld, ret = %d",
-			   last_key, ret);
-		return ret;
-	}
-
-	BUG_ON(nilfs_dat_translate(dat, last_key, &out) < 0);
-	BUG_ON(out != blocknr);
-
-	*vblocknr = last_key;
-	return ret;
-}
-
-static int nilfs_free_blocknr(struct inode *dat, sector_t dst_vblocknr,
-			      sector_t free_blocknr)
-{
-	sector_t vblocknr;
-	struct super_block *sb = dat->i_sb;
-	int ret = 0;
-	sector_t vblocknrs[1];
-
-	ret = nilfs_dat_make(dat, free_blocknr, dst_vblocknr, &vblocknr);
-	if (ret < 0) {
-		nilfs_warn(sb, "Failed to create new DAT object: ret = %d",
-			   ret);
-		return ret;
-	}
-
-	// vblocknrs[0] = vblocknr;
-	// ret = nilfs_dat_freev(dat, vblocknrs, 1);
-	// if (ret < 0) {
-	// 	nilfs_warn(sb, "Failed to free vblocknr %ld: ret = %d",
-	// 		   vblocknr, ret);
-	// 	return ret;
-	// }
-
-	return ret;
-}
-
 static int nilfs_dat_dedup_make_src(struct inode *dat, sector_t vblocknr)
 {
 	struct buffer_head *entry_bh;
@@ -330,10 +233,6 @@ static int nilfs_change_blocknr(struct nilfs_bmap *bmap,
 		nilfs_mdt_clear_dirty(dat);
 		goto out;
 	}
-
-	ret = nilfs_free_blocknr(dat, dst->vblocknr, free_blocknr);
-	if (ret < 0)
-		goto out;
 
 	ret = nilfs_segctor_move_block(sci);
 	if (ret < 0) {
