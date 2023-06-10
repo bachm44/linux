@@ -215,11 +215,16 @@ static int nilfs_change_blocknr(struct nilfs_bmap *bmap,
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
+	sector_t free_blocknr;
 	int ret = 0;
 
 	// TODO
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
+
+	ret = nilfs_dat_translate(dat, dst->vblocknr, &free_blocknr);
+	if (ret < 0)
+		goto out;
 
 	ret = nilfs_dat_dedup(dat, src->vblocknr, dst->vblocknr);
 	if (ret < 0) {
@@ -253,36 +258,32 @@ int nilfs_dedup(struct inode *inode,
 	sector_t blocknr = 0;
 	int ret = 0;
 	uint64_t deduplicated = 0;
-	size_t current_block_index = 0;
 
-	nilfs_info(sb, "Starting deduplication of %d payloads", blocks_count);
+	nilfs_info(sb, "Starting deduplication of %d blocks", blocks_count);
+
+	if (blocks_count > 2) {
+		nilfs_warn(sb,
+			   "Multiple block dedup is not supported, skipping");
+		goto out;
+	}
 
 	BUG_ON(!blocks);
+	src = &blocks[0];
+	BUG_ON(!src);
 	BUG_ON(blocks_count < 2);
+	nilfs_debug(sb, "SRC: ");
+	nilfs_dedup_print_block_info(src, nilfs, inode);
 
 	// TODO check if needed
 	if (nilfs_sb_need_update(nilfs))
 		set_nilfs_discontinued(nilfs);
 
-	while (current_block_index < blocks_count) {
-		const struct nilfs_deduplication_block *dst = NULL;
-		const struct nilfs_deduplication_block *current_block =
-			&blocks[current_block_index];
+	for (size_t i = 1; i < blocks_count; ++i) {
+		const struct nilfs_deduplication_block *dst = &blocks[i];
+		BUG_ON(!dst);
 
-		++current_block_index;
-		// TODO support multiple block deduplication
-		if (current_block->flags == NILFS_DEDUPLICATION_BLOCK_SRC) {
-			src = current_block;
-			dst = NULL;
-			continue;
-		} else if (current_block->flags ==
-			   NILFS_DEDUPLICATION_BLOCK_DST) {
-			if (!src)
-				continue;
-			dst = current_block;
-		} else {
-			BUG();
-		}
+		nilfs_debug(sb, "Before deduplication DST: ");
+		nilfs_dedup_print_block_info(dst, nilfs, inode);
 
 		if (!nilfs_dedup_is_block_in_dat(nilfs, dst)) {
 			src = NULL;
@@ -311,20 +312,13 @@ int nilfs_dedup(struct inode *inode,
 			continue;
 		}
 
-		BUG_ON(nilfs_dat_translate(nilfs->ns_dat, dst->vblocknr,
-					   &blocknr) < 0);
-		BUG_ON(blocknr != src->blocknr);
-		const sector_t dst_blocknr = blocknr;
-		BUG_ON(nilfs_dat_translate(nilfs->ns_dat, src->vblocknr,
-					   &blocknr) < 0);
-		BUG_ON(dst_blocknr != blocknr);
-
 		nilfs_debug(sb, "After deduplication DST: ");
 		nilfs_dedup_print_block_info(dst, nilfs, inode);
 
 		++deduplicated;
 	}
 
+out:
 	nilfs_info(sb, "Finished deduplication, deduplicated %ld blocks",
 		   deduplicated);
 
