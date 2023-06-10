@@ -285,18 +285,13 @@ int nilfs_dedup(struct inode *inode,
 		nilfs_debug(sb, "Before deduplication DST: ");
 		nilfs_dedup_print_block_info(dst, nilfs, inode);
 
-		if (!nilfs_dedup_is_block_in_dat(nilfs, dst)) {
-			src = NULL;
-			dst = NULL;
+		if (!nilfs_dedup_is_block_in_dat(nilfs, dst))
 			continue;
-		}
 
 		ret = nilfs_dat_translate(nilfs->ns_dat, dst->vblocknr,
 					  &blocknr);
 		if (ret < 0) {
 			nilfs_debug(sb, "Block DAT not found, skipping");
-			src = NULL;
-			dst = NULL;
 			continue;
 		}
 
@@ -307,8 +302,6 @@ int nilfs_dedup(struct inode *inode,
 				"Deduplication failed for block %lld with code %d",
 				dst->vblocknr, ret);
 
-			src = NULL;
-			dst = NULL;
 			continue;
 		}
 
