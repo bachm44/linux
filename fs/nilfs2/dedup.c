@@ -12,42 +12,6 @@
 #include "nilfs.h"
 #include <linux/vmalloc.h>
 
-static void
-nilfs_dedup_print_block_info(const struct nilfs_deduplication_block *block,
-			     const struct the_nilfs *nilfs, struct inode *i)
-{
-	sector_t blocknr;
-	struct super_block *sb = nilfs->ns_sb;
-
-	int ret = nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
-
-	nilfs_debug(
-		sb,
-		"BLOCK: ino=%ld, cno=%ld, vblocknr=%ld, blocknr=%ld, offset=%ld, dat_translated=%ld, dat_ret=%d",
-		block->ino, block->cno, block->vblocknr, block->blocknr,
-		block->offset, blocknr, ret);
-}
-
-static bool
-nilfs_dedup_is_block_in_dat(struct the_nilfs *nilfs,
-			    const struct nilfs_deduplication_block *block)
-{
-	sector_t blocknr;
-	struct super_block *sb = nilfs->ns_sb;
-
-	const int ret =
-		nilfs_dat_translate(nilfs->ns_dat, block->vblocknr, &blocknr);
-	if (ret < 0) {
-		nilfs_warn(
-			sb,
-			"Block with vblocknr = %ld not found in DAT, skipping",
-			block->vblocknr);
-		return false;
-	}
-
-	return true;
-}
-
 static int nilfs_dat_dedup_make_src(struct inode *dat, sector_t vblocknr)
 {
 	struct buffer_head *entry_bh;
@@ -215,21 +179,15 @@ static int nilfs_change_blocknr(struct nilfs_bmap *bmap,
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct nilfs_sc_info *sci = nilfs->ns_writer;
 	struct inode *dat = nilfs->ns_dat;
-	sector_t free_blocknr;
 	int ret = 0;
 
 	// TODO
 	// check if we need gcflag set
 	nilfs_transaction_lock(sb, &ti, 1);
 
-	ret = nilfs_dat_translate(dat, dst->vblocknr, &free_blocknr);
-	if (ret < 0)
-		goto out;
-
 	ret = nilfs_dat_dedup(dat, src->vblocknr, dst->vblocknr);
 	if (ret < 0) {
 		nilfs_warn(sb, "nilfs_dat_dedup failed");
-		// nilfs_segctor_abort_construction(sci, nilfs, ret);
 		nilfs_mdt_clear_dirty(dat);
 		goto out;
 	}
@@ -255,11 +213,10 @@ int nilfs_dedup(struct inode *inode,
 	struct the_nilfs *nilfs = sb->s_fs_info;
 	struct inode *dat = nilfs->ns_dat;
 	struct nilfs_bmap *bmap = NILFS_I(dat)->i_bmap;
-	sector_t blocknr = 0;
 	int ret = 0;
 	uint64_t deduplicated = 0;
 
-	nilfs_info(sb, "Starting deduplication of %d blocks", blocks_count);
+	nilfs_info(sb, "Starting deduplication of %d blocks", blocks_count - 1);
 
 	if (blocks_count > 2) {
 		nilfs_warn(sb,
@@ -271,29 +228,13 @@ int nilfs_dedup(struct inode *inode,
 	src = &blocks[0];
 	BUG_ON(!src);
 	BUG_ON(blocks_count < 2);
-	nilfs_debug(sb, "SRC: ");
-	nilfs_dedup_print_block_info(src, nilfs, inode);
 
-	// TODO check if needed
 	if (nilfs_sb_need_update(nilfs))
 		set_nilfs_discontinued(nilfs);
 
 	for (size_t i = 1; i < blocks_count; ++i) {
 		const struct nilfs_deduplication_block *dst = &blocks[i];
 		BUG_ON(!dst);
-
-		nilfs_debug(sb, "Before deduplication DST: ");
-		nilfs_dedup_print_block_info(dst, nilfs, inode);
-
-		if (!nilfs_dedup_is_block_in_dat(nilfs, dst))
-			continue;
-
-		ret = nilfs_dat_translate(nilfs->ns_dat, dst->vblocknr,
-					  &blocknr);
-		if (ret < 0) {
-			nilfs_debug(sb, "Block DAT not found, skipping");
-			continue;
-		}
 
 		ret = nilfs_change_blocknr(bmap, src, dst);
 		if (ret < 0) {
@@ -304,9 +245,6 @@ int nilfs_dedup(struct inode *inode,
 
 			continue;
 		}
-
-		nilfs_debug(sb, "After deduplication DST: ");
-		nilfs_dedup_print_block_info(dst, nilfs, inode);
 
 		++deduplicated;
 	}
